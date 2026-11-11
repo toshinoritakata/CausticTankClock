@@ -50,3 +50,7 @@ python3 -m http.server 8000
 ## 動作環境 / Requirements
 
 WebGPU と `float32-filterable` に対応したブラウザ。Apple Silicon の Mac 上の Chrome で開発・確認しています。他の GPU・ブラウザでは未確認です。
+
+## ライセンス / License
+
+MIT License. 詳細は [LICENSE](LICENSE) を参照してください。
