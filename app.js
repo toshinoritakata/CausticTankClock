@@ -35,7 +35,7 @@ async function main() {
   app = window.tank = { device, lastError: null, fps: 0, frames: 0 };   // debug API (tank.cam, tank.preset, tank.state, ...)
   const rd = id => +$(id).value;
 
-  const renderer = await gpu.createRenderer({ device, gctx, fmt, canvas, qp, SCENE_WGSL: renderMod.SCENE_WGSL, BG_WGSL: renderMod.BG_WGSL });
+  const renderer = await gpu.createRenderer({ device, gctx, fmt, canvas, qp, SCENE_WGSL: renderMod.SCENE_WGSL, BG_WGSL: renderMod.BG_WGSL, FINAL_WGSL: renderMod.FINAL_WGSL });
   const { fitCanvas, size } = renderer;
   const { makeCtx, ensureVol: ensureVolFor } = gpu.createContexts({ device, shaders: { computeWGSL: solverMod.computeWGSL, RELAX_WGSL: relaxMod.RELAX_WGSL, godWGSL: godMod.godWGSL }, renderer });
   const ensureVol = c => ensureVolFor(c, +$('volres').value, rd('nz'));

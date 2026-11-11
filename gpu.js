@@ -3,6 +3,7 @@
 
 export const ST = GPUBufferUsage.STORAGE, CS = GPUBufferUsage.COPY_SRC, CD = GPUBufferUsage.COPY_DST, UN = GPUBufferUsage.UNIFORM;
 const SAMPLES = 4;                  // MSAA
+const HDR = 'rgba16float';          // linear scene radiance; tone-mapped once in the final pass
 const WGSL_COMPUTE = GPUShaderStage.COMPUTE;
 
 export async function initDevice(canvas, onError) {
@@ -32,9 +33,10 @@ export async function readBuffer(device, buf, size) {
   await st.mapAsync(GPUMapMode.READ); const o = new Float32Array(st.getMappedRange().slice(0)); st.unmap(); st.destroy(); return o;
 }
 
-// ---------- render pipelines + MSAA/depth targets ----------
-export async function createRenderer({ device, gctx, fmt, canvas, qp, SCENE_WGSL, BG_WGSL }) {
-  const sceneMod = await compileWGSL(device, SCENE_WGSL, 'scene'), bgMod = await compileWGSL(device, BG_WGSL, 'bg');
+// ---------- render pipelines + MSAA/depth/HDR targets ----------
+const fs_name = f => f.endsWith('-srgb') ? 'fsSrgb' : 'fs';   // *-srgb swapchain: hardware applies the OETF, so skip the manual gamma
+export async function createRenderer({ device, gctx, fmt, canvas, qp, SCENE_WGSL, BG_WGSL, FINAL_WGSL }) {
+  const sceneMod = await compileWGSL(device, SCENE_WGSL, 'scene'), bgMod = await compileWGSL(device, BG_WGSL, 'bg'), finMod = await compileWGSL(device, FINAL_WGSL, 'final');
   const VF = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT;
   const bgl = device.createBindGroupLayout({ entries: [
     { binding: 0, visibility: VF, buffer: { type: 'uniform' } },
@@ -46,7 +48,7 @@ export async function createRenderer({ device, gctx, fmt, canvas, qp, SCENE_WGSL
   const layout = device.createPipelineLayout({ bindGroupLayouts: [bgl] });
   const blend = { color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' }, alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' } };
   const mkRP = (mod, vs, fs, o = {}) => device.createRenderPipeline({
-    layout, vertex: { module: mod, entryPoint: vs }, fragment: { module: mod, entryPoint: fs, targets: [{ format: fmt, blend: o.blend }] },
+    layout, vertex: { module: mod, entryPoint: vs }, fragment: { module: mod, entryPoint: fs, targets: [{ format: HDR, blend: o.blend }] },
     primitive: { topology: 'triangle-list', cullMode: 'none' },
     depthStencil: { format: 'depth24plus', depthWriteEnabled: o.dw !== false, depthCompare: o.cmp || 'less' },
     multisample: { count: SAMPLES },
@@ -56,9 +58,14 @@ export async function createRenderer({ device, gctx, fmt, canvas, qp, SCENE_WGSL
     table: mkRP(sceneMod, 'vsTable', 'fsTable'), floor: mkRP(sceneMod, 'vsFloor', 'fsFloor'),
     water: mkRP(sceneMod, 'vsWater', 'fsWater', { blend }), glass: mkRP(sceneMod, 'vsGlass', 'fsGlass', { blend, dw: false }),
   };
+  const fbgl = device.createBindGroupLayout({ entries: [{ binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'unfilterable-float' } }] });
+  const finalPipe = device.createRenderPipeline({
+    layout: device.createPipelineLayout({ bindGroupLayouts: [fbgl] }), vertex: { module: finMod, entryPoint: 'vs' },
+    fragment: { module: finMod, entryPoint: fs_name(fmt), targets: [{ format: fmt }] }, primitive: { topology: 'triangle-list' },
+  });
   const ubuf = device.createBuffer({ size: 256 + 96, usage: UN | CD });   // view/light/look uniforms (written by app.js writeUniforms)
   const size = { w: 0, h: 0 };
-  let msaaTex = null, depthTex = null;
+  let msaaTex = null, depthTex = null, hdrTex = null, finalBG = null;
   // resize the canvas + render targets to the element size (?w= / ?h= force a fixed size)
   function fitCanvas() {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -66,20 +73,24 @@ export async function createRenderer({ device, gctx, fmt, canvas, qp, SCENE_WGSL
     const w = fw || Math.max(64, Math.round(canvas.clientWidth * dpr)), h = fh || Math.max(64, Math.round(canvas.clientHeight * dpr));
     if (canvas.width !== w || canvas.height !== h || !msaaTex) {
       canvas.width = w; canvas.height = h; size.w = w; size.h = h;
-      msaaTex?.destroy(); depthTex?.destroy();
-      msaaTex = device.createTexture({ size: [w, h], sampleCount: SAMPLES, format: fmt, usage: GPUTextureUsage.RENDER_ATTACHMENT });
+      msaaTex?.destroy(); depthTex?.destroy(); hdrTex?.destroy();
+      msaaTex = device.createTexture({ size: [w, h], sampleCount: SAMPLES, format: HDR, usage: GPUTextureUsage.RENDER_ATTACHMENT });
+      hdrTex = device.createTexture({ size: [w, h], format: HDR, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
+      finalBG = device.createBindGroup({ layout: fbgl, entries: [{ binding: 0, resource: hdrTex.createView() }] });
       depthTex = device.createTexture({ size: [w, h], sampleCount: SAMPLES, format: 'depth24plus', usage: GPUTextureUsage.RENDER_ATTACHMENT });
     }
   }
   // meshVerts = water mesh resolution (vertices per side)
   function encodeRender(enc, c, meshVerts) {
     const rp = enc.beginRenderPass({
-      colorAttachments: [{ view: msaaTex.createView(), resolveTarget: gctx.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'discard', clearValue: { r: 0, g: 0, b: 0, a: 1 } }],
+      colorAttachments: [{ view: msaaTex.createView(), resolveTarget: hdrTex.createView(), loadOp: 'clear', storeOp: 'discard', clearValue: { r: 0, g: 0, b: 0, a: 1 } }],
       depthStencilAttachment: { view: depthTex.createView(), depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'discard' },
     });
     rp.setBindGroup(0, c.renderBG);
     rp.setPipeline(RP.bg); rp.draw(3); rp.setPipeline(RP.table); rp.draw(6); rp.setPipeline(RP.floor); rp.draw(6);
     rp.setPipeline(RP.water); rp.draw((meshVerts - 1) * (meshVerts - 1) * 6); rp.setPipeline(RP.glass); rp.draw(6, 4); rp.end();
+    const fp = enc.beginRenderPass({ colorAttachments: [{ view: gctx.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }] });
+    fp.setPipeline(finalPipe); fp.setBindGroup(0, finalBG); fp.draw(3); fp.end();
   }
   return { bgl, vsamp, ubuf, size, fitCanvas, encodeRender };
 }

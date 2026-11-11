@@ -6,31 +6,24 @@ export const COMMON = /* wgsl */`
 // ===================== LOOK (tune here) =====================
 const IOR            : f32 = 1.33;                       // must match solver (nw = 1.33)
 const ABSORB         : vec3f = vec3f(0.55, 0.14, 0.07);  // per-channel water absorption per unit length
-const SCATTER_COL    : vec3f = vec3f(0.004, 0.03, 0.036);  // in-scattered water body colour (lit by floor glow)
+const SCATTER_COL    : vec3f = vec3f(0.003, 0.021, 0.026);  // in-scattered water body colour (lit by floor glow)
 const FLOOR_ALBEDO   : vec3f = vec3f(0.88, 0.90, 0.92);
 const FLOOR_AMBIENT  : f32 = 0.004;
-const FLOOR_GAIN     : f32 = 1.4;                        // brightness of the lit caustic on the floor
+const FLOOR_GAIN     : f32 = 2.6;                        // brightness of the lit caustic on the floor
 const LIGHT_COL      : vec3f = vec3f(1.0, 0.95, 0.86);
 const BOX_GAIN       : f32 = 6.0;                        // overhead soft box (reflected in water)
 const STRIP_GAIN     : f32 = 4.0;                        // side / back strip lights
 const F0_WATER       : f32 = 0.02;
 const SUN_POW        : f32 = 900.0;
 const SUN_INT        : f32 = 18.0;
-const GLASS_REFL     : f32 = 1.5;                        // glass wall reflection strength
+const GLASS_REFL     : f32 = 0.25;                       // glass wall reflection colour strength (linear)
+const GLASS_ALPHA    : f32 = 1.1;                        // glass wall opacity from the Fresnel term (how much it hides what is behind)
 const GLASS_EDGE_W   : f32 = 0.006;                       // bright edge half width (world units)
 const WALL_TOP       : f32 = 0.15;                        // glass wall height above water level
 const TABLE_GLOSS    : f32 = 0.2;
-const SPILL_GAIN     : f32 = 0.10;                        // light spilled on table around tank
-const EXPOSURE       : f32 = 1.0;
+const SPILL_GAIN     : f32 = 0.16;                        // light spilled on table around tank
 const PHASE_KNEE     : f32 = 1.0;                        // god-ray phase factor: unchanged below, soft-limited above (HG forward peak at g=0.5 is ~4.5x -> blows out when looking into the light)
 const PHASE_MAX      : f32 = 1.8;
-const RAY_KNEE       : f32 = 0.6;                        // god-ray radiance (linear, pre-tonemap): unchanged below, soft-limited above (long shafts summed to >>1 and clipped to flat white)
-const RAY_MAX        : f32 = 1.4; 
-const GLASS_RAY_KNEE : f32 = 0.25;                       // same for the side-glass view of the water column (drawn on top of an already bright pane)
-const GLASS_RAY_MAX  : f32 = 0.55;
-const GLASS_KNEE     : f32 = 0.16;                       // glass reflection (linear): grazing Fresnel x big strip light otherwise clips; soft-limited above the knee
-const GLASS_MAX      : f32 = 0.32;
-const GLASS_BACK     : f32 = 0.5;                        // far-side panes are seen through the water and the near pane: their reflection is weaker (they were stacking to flat white)
 const VIEW_SLOPE     : f32 = 0.3;                       // LOOK ONLY: scales surface slopes used for refraction/reflection shading (1 = physical)
 // ============================================================
 
@@ -81,8 +74,6 @@ fn keyRot(d:vec3f)->vec3f {
   return a2*eh+vec3f(0.0,b2,0.0)+p*ep;
 }
 
-// identity below knee, tanh roll-off above it towards mx (per channel)
-fn softcap(x:vec3f, knee:f32, mx:f32)->vec3f { let e=max(x-vec3f(knee),vec3f(0.0)); return min(x,vec3f(knee))+(mx-knee)*tanh(e/(mx-knee)); }
 // ---------- god rays: ray-march of the caustic light volume along a view ray inside the water ----------
 fn ign(p:vec2f)->f32 { return fract(52.9829189*fract(dot(p,vec2f(0.06711056,0.00583715)))); }
 fn h13(p:vec3f)->f32 { var q=fract(p*0.1031); q+=dot(q,q.zyx+31.32); return fract((q.x+q.y)*q.z); }
@@ -115,11 +106,9 @@ fn godRays(P:vec3f, r:vec3f, tEnd:f32, px:vec2f)->vec3f {
     acc+=min(volSample(p),14.0)*T*mix(0.25,1.0,smoothstep(0.0,0.3,-p.y));   // shallow light is ~uniform (no shafts yet): de-emphasise the glowing band under the surface
     T*=stepT;
   }
-  return softcap(acc*ds*sig*u.g.y*phase*LIGHT_COL*vec3f(0.85,1.0,1.0),RAY_KNEE,RAY_MAX);
+  return acc*ds*sig*u.g.y*phase*LIGHT_COL*vec3f(0.85,1.0,1.0);
 }
 
-fn aces(x:vec3f)->vec3f { return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14), vec3f(0.0), vec3f(1.0)); }
-fn outc(c:vec3f)->vec3f { return pow(aces(c*EXPOSURE), vec3f(1.0/2.2)); }
 
 // procedural dark-room environment: soft boxes / strips on a near-black gradient
 fn env(d:vec3f)->vec3f {
@@ -181,7 +170,7 @@ struct FS { @builtin(position) pos:vec4f, @location(0) w:vec3f, @location(1) uv:
   if (cosi < 0.0) { // seen from below the surface: translucent bluish mirror
     let rf=reflect(rd,-n);
     let col=waterTintAt(0.2)*3.0 + vec3f(0.02,0.05,0.07);
-    return vec4f(outc(col)*0.55, 0.55);
+    return vec4f(col*0.55, 0.55);
   }
   let F=F0_WATER+(1.0-F0_WATER)*pow(1.0-cosi,5.0);
   let r=refract(rd,n,1.0/IOR);
@@ -206,7 +195,7 @@ struct FS { @builtin(position) pos:vec4f, @location(0) w:vec3f, @location(1) uv:
   let sd=normalize(u.sun.xyz);
   refl+=SUN_INT*pow(max(dot(rr,sd),0.0),SUN_POW)*LIGHT_COL;
   let outv=col*(1.0-F)+refl*F;
-  return vec4f(outc(outv),1.0);
+  return vec4f(outv,1.0);
 }
 
 // ---------- tank floor (visible through side glass) ----------
@@ -219,7 +208,7 @@ struct FS { @builtin(position) pos:vec4f, @location(0) w:vec3f, @location(1) uv:
   let rd=normalize(i.w-u.eye.xyz);
   let t=u.a.x*1.3+0.15;
   var col=floorShade(i.w.xz)*exp(-ABSORB*t)+waterTintAt(0.0)*(1.0-exp(-t*0.9));
-  return vec4f(outc(col),1.0);
+  return vec4f(col,1.0);
 }
 
 // ---------- table ----------
@@ -239,11 +228,11 @@ struct FS { @builtin(position) pos:vec4f, @location(0) w:vec3f, @location(1) uv:
   var col=vec3f(0.006,0.0065,0.008)+refl*F*TABLE_GLOSS*0.35;
   let spill=exp(-d*5.0)*SPILL_GAIN*(0.2+u.b.x);
   col+=spill*vec3f(0.30,0.55,0.62);
-  col+=exp(-d*28.0)*0.05*vec3f(0.6,0.85,0.9)*(0.2+u.b.x);
+  col+=exp(-d*28.0)*0.08*vec3f(0.6,0.85,0.9)*(0.2+u.b.x);
   col*=exp(-length(p)*0.22);
   // dark contact shadow right at the glass base
   col*=mix(0.35,1.0,smoothstep(0.0,0.02,d));
-  return vec4f(outc(col),1.0);
+  return vec4f(col,1.0);
 }
 
 // ---------- glass walls ----------
@@ -261,11 +250,10 @@ struct FS { @builtin(position) pos:vec4f, @location(0) w:vec3f, @location(1) uv:
   var n=vec3f(0.0,0.0,1.0);
   if (ii==1u) { n=vec3f(0.0,0.0,-1.0); } else if (ii==2u) { n=vec3f(1.0,0.0,0.0); } else if (ii==3u) { n=vec3f(-1.0,0.0,0.0); }
   let rd=normalize(i.w-u.eye.xyz);
-  var back=1.0;
-  if (dot(n,rd)>0.0) { n=-n; back=GLASS_BACK; }   // far pane (seen from inside)
+  if (dot(n,rd)>0.0) { n=-n; }   // far pane (seen from inside)
   let cosv=clamp(-dot(n,rd),0.0,1.0);
   let F=0.05+0.95*pow(1.0-cosv,4.0);
-  let refl=softcap(env(reflect(rd,n))*F*GLASS_REFL,GLASS_KNEE,GLASS_MAX)*back;
+  let refl=env(reflect(rd,n))*F*GLASS_REFL;
   let dTop=WALL_TOP-i.lc.y; let dBot=i.lc.y+u.a.x; let dSide=0.5-abs(i.lc.x);
   let dE=min(dTop,min(dBot,dSide));
   let edge=smoothstep(GLASS_EDGE_W,0.0,dE);
@@ -279,7 +267,7 @@ struct FS { @builtin(position) pos:vec4f, @location(0) w:vec3f, @location(1) uv:
   // faint vertical sheen band
   let sheen=smoothstep(0.35,0.0,abs(i.lc.x-0.18))*0.02*F;
   var rgb=refl+inside+vec3f(0.55,0.75,0.85)*edge*0.7+sheen+vec3f(0.35,0.55,0.62)*men*0.35;
-  let a=clamp(F*GLASS_REFL+wa+edge*0.7+men*0.25,0.0,1.0);
+  let a=clamp(F*GLASS_ALPHA+wa+edge*0.7+men*0.25,0.0,1.0);
   if (u.g.x>0.5 && under>0.5) { // side view: march the water column behind the entry glass
     var no=vec3f(0.0,0.0,1.0);
     if (ii==1u) { no=vec3f(0.0,0.0,-1.0); } else if (ii==2u) { no=vec3f(1.0,0.0,0.0); } else if (ii==3u) { no=vec3f(-1.0,0.0,0.0); }
@@ -294,11 +282,10 @@ struct FS { @builtin(position) pos:vec4f, @location(0) w:vec3f, @location(1) uv:
       for (var k=1; k<=NS; k++) { let tt=te*f32(k)/f32(NS); let pp=q+rd*tt; if (pp.y>bilH(clamp(pp.xz+vec2f(0.5),vec2f(0.0),vec2f(1.0)))*u.a.y) { tb=tt; break; } ta=tt; }
       if (tb>0.0) { for (var k=0; k<6; k++) { let tm=0.5*(ta+tb); let pp=q+rd*tm; if (pp.y>bilH(clamp(pp.xz+vec2f(0.5),vec2f(0.0),vec2f(1.0)))*u.a.y) { tb=tm; } else { ta=tm; } } te=0.5*(ta+tb); }
       let ins=godRays(q,rd,te,i.pos.xy);
-      let base=outc(rgb); let add=outc(softcap(ins,GLASS_RAY_KNEE,GLASS_RAY_MAX));
-      return vec4f(base+add-base*add, a);   // screen blend instead of a plain add: cannot clip past 1
+      return vec4f(rgb+ins, a);
     }
   }
-  return vec4f(outc(rgb), a);
+  return vec4f(rgb, a);
 }
 `;
 
@@ -317,7 +304,7 @@ export const BG_WGSL = COMMON + /* wgsl */`
   c *= 1.0-0.45*dot(ndc*0.6,ndc*0.6);
   let sdot=dot(rd,normalize(u.sun.xyz));  // small sun disc (visible from side views)
   c += LIGHT_COL*6.0*smoothstep(0.9990,0.9996,sdot)+LIGHT_COL*0.05*pow(max(sdot,0.0),64.0);
-  return vec4f(outc(c),1.0);
+  return vec4f(c,1.0);
 }
 `;
 
@@ -349,4 +336,28 @@ struct R { t:f32, amp:f32, ambient:f32, pad:f32, clk:array<vec4f,8> }  // clk: (
   }
   hout[i]=hin[i]+r.amp*w;
 }
+`;
+
+// Final pass: the scene is rendered + blended LINEAR into an rgba16float target; exposure + ACES + gamma happen once, here.
+const FINAL_COMMON = /* wgsl */`
+const EXPOSURE : f32 = 2.0;                        // linear gain before the curve
+const GRADE_TINT : vec3f = vec3f(0.96, 1.0, 1.03); // linear teal-leaning white balance (pre-curve)
+const GRADE_SAT : f32 = 1.15;                      // saturation boost after the curve (1 = none)
+const GRADE_MID : f32 = 1.25;                      // >1 darkens mid-tones (more contrast between dark water and bright caustics)
+@group(0) @binding(0) var hdr:texture_2d<f32>;
+@vertex fn vs(@builtin(vertex_index) vi:u32) -> @builtin(position) vec4f {
+  let p = array<vec2f,3>(vec2f(-1.0,-1.0), vec2f(3.0,-1.0), vec2f(-1.0,3.0));
+  return vec4f(p[vi], 0.0, 1.0);
+}
+fn aces(x:vec3f)->vec3f { return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14), vec3f(0.0), vec3f(1.0)); }
+fn toneMapped(fp:vec4f)->vec3f {
+  var c = aces(max(textureLoad(hdr, vec2i(fp.xy), 0).rgb, vec3f(0.0))*EXPOSURE*GRADE_TINT);
+  let l = dot(c, vec3f(0.2126, 0.7152, 0.0722));
+  c = clamp(mix(vec3f(l), c, GRADE_SAT), vec3f(0.0), vec3f(1.0));
+  return pow(c, vec3f(GRADE_MID));
+}
+`;
+export const FINAL_WGSL = FINAL_COMMON + /* wgsl */`
+@fragment fn fs(@builtin(position) fp:vec4f) -> @location(0) vec4f { return vec4f(pow(toneMapped(fp), vec3f(1.0/2.2)), 1.0); }
+@fragment fn fsSrgb(@builtin(position) fp:vec4f) -> @location(0) vec4f { return vec4f(toneMapped(fp), 1.0); }   // *-srgb swapchain: hardware encodes
 `;
