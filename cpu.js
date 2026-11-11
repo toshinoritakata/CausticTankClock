@@ -1,5 +1,6 @@
 // Float64 CPU reference of the oblique Monge-Ampere design + exact oblique forward caustic (mirrors solver.js; small N only).
-import { NW } from './oblique.js';
+// Static imports drop the ?v= cache-busting query, so forward it from this module's own URL.
+const { NW } = await import('./oblique.js' + new URL(import.meta.url).search);
 const fftCache = {};
 function plan(n) {
   if (fftCache[n]) return fftCache[n];
