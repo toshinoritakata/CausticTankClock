@@ -48,6 +48,12 @@ python3 -m http.server 8000
 
 パネルの「Light」で光の高度・方位、「Solver / look」で波の解像度（128 / 256 / 512）やコースティクスの粗さを変えられます。
 
+## パラメータの保存 / Saving parameters
+
+パネルの設定（スライダー、チェックボックス、セレクト、文字列、カメラの向き・距離・注視点の高さ）のうち初期値から変更したものだけが、変更のたびに自動でブラウザの localStorage に保存され（元に戻すと削除され、何も変えていなければ何も保存しません）、次回の読み込み時に復元されます。パネル下部のボタンで「save」（今すぐ保存）、「reset to defaults」（保存を消して初期値でリロード）、「export json」「import json」（`CausticTankClock-params.json` の書き出し・読み込み）ができます。URL に `?reset=1` を付けると保存値を無視して消去します。時計の時刻オフセット、パネルの開閉・全画面状態は保存しません。保存するのは変更点だけなので、後からページの初期値が変わっても、触っていない設定には新しい初期値が自動で反映されます。「export json」は現在の全値を書き出します。保存先はブラウザごと・オリジン（GitHub Pages と localhost は別）ごとに独立しており、共有されません。
+
+Panel settings (sliders, checkboxes, selects, text, camera yaw/pitch/distance and look-at height) that you changed from their defaults are auto-saved to the browser's localStorage (only the differences are stored: setting a value back removes it, and nothing is written if nothing changed) and restored on the next load. The buttons at the bottom of the panel offer "save" (write now), "reset to defaults" (clear the stored entry and reload with defaults), and "export json" / "import json" (`CausticTankClock-params.json`). Adding `?reset=1` to the URL ignores and clears stored values. The clock time offset and panel open/fullscreen state are not saved. Because only changes are stored, later changes to the page's defaults apply automatically to settings you never touched; "export json" writes the full current values. Storage is per browser and per origin (GitHub Pages and localhost are separate), so values are not shared between them.
+
 ## 構成 / Files
 
 - `index.html` — UI とモジュールの読み込み

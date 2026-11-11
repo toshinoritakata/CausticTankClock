@@ -414,25 +414,33 @@ async function main() {
   }
   // ---------- camera ----------
   const PRESETS = { 1: { yaw: 0, pitch: 89.5, dist: 3.4 }, 2: { yaw: 22, pitch: 52, dist: 3.3 }, 3: { yaw: 8, pitch: 14, dist: 3.1 } };
-  const cam = { yaw: 22, pitch: 21, dist: 3.3, ty: 22, tp: 21, td: 3.3, vy: 0, vp: 0 };
+  const cam = { yaw: 22, pitch: 21, dist: 3.3, ty: 22, tp: 21, td: 3.3, vy: 0, vp: 0, oy: 0, toy: 0 };   // oy = look-at height offset (world units) added to the default target; toy = eased target. x/z of the target are fixed at 0
   const rad = Math.PI / 180; app.cam = cam;
   function preset(k) { const p = PRESETS[k]; // take the shortest way round in yaw
     cam.ty = p.yaw; cam.tp = p.pitch; cam.td = p.dist; cam.yaw = cam.ty + ((((cam.yaw - cam.ty) % 360) + 540) % 360 - 180); }
   app.preset = k => { preset(k); cam.vy = cam.vp = 0; };   // presets no longer stop the auto-orbit
-  app.snapCam = () => { cam.yaw = cam.ty; cam.pitch = cam.tp; cam.dist = cam.td; };
+  app.snapCam = () => { cam.yaw = cam.ty; cam.pitch = cam.tp; cam.dist = cam.td; cam.oy = cam.toy; };
+  const syncTargetSliders = () => { $('tgy').value = (+cam.toy).toFixed(2); };
+  const readTargetSliders = () => { cam.toy = +$('tgy').value; };
+  $('tgy').addEventListener('input', readTargetSliders);
+  $('tgreset').onclick = () => { cam.toy = 0; syncTargetSliders(); $('tgy').dispatchEvent(new Event('change', { bubbles: true })); };
   let drag = null, moved = 0, dragEnd = -1e9;
-  canvas.addEventListener('pointerdown', e => { drag = { x: e.clientX, y: e.clientY, t: performance.now() }; moved = 0; canvas.setPointerCapture(e.pointerId); });
+  canvas.addEventListener('pointerdown', e => { drag = { x: e.clientX, y: e.clientY, t: performance.now(), pan: e.button === 2 || e.shiftKey }; moved = 0; canvas.setPointerCapture(e.pointerId); });
   canvas.addEventListener('pointermove', e => {
     if (!drag) return; if (e.buttons === 0) { drag = null; dragEnd = performance.now(); return; } const dx = e.clientX - drag.x, dy = e.clientY - drag.y; drag.x = e.clientX; drag.y = e.clientY; moved += Math.abs(dx) + Math.abs(dy);
-    cam.ty -= dx * 0.3; cam.tp = Math.min(89.5, Math.max(4, cam.tp + dy * 0.3));
+    if (drag.pan) {   // pan: vertical drag moves only the look-at height, scaled by distance
+      const sc = 2 * cam.dist * Math.tan(FOV / 2) / Math.max(1, canvas.clientHeight);
+      cam.toy = Math.min(1, Math.max(-1, cam.toy + dy * sc)); syncTargetSliders();
+    } else { cam.ty -= dx * 0.3; cam.tp = Math.min(89.5, Math.max(4, cam.tp + dy * 0.3)); }
   });
   canvas.addEventListener('pointerup', e => { drag = null; dragEnd = performance.now(); });
+  canvas.addEventListener('contextmenu', e => e.preventDefault());
   canvas.addEventListener('wheel', e => { e.preventDefault(); cam.td = Math.min(6, Math.max(1.2, cam.td * Math.exp(e.deltaY * 0.001))); }, { passive: false });
   const FOV = 34 * rad;
 
   // ---------- frame ----------
   function writeUniforms() {
-    const D = rd('D'), tgt = [0, -D * 0.42, 0];
+    const D = rd('D'), tgt = [0, -D * 0.42 + cam.oy, 0];
     const cp = Math.cos(cam.pitch * rad), eye = [tgt[0] + cam.dist * cp * Math.sin(cam.yaw * rad), tgt[1] + cam.dist * Math.sin(cam.pitch * rad), tgt[2] + cam.dist * cp * Math.cos(cam.yaw * rad)];
     const up = cam.pitch > 89 ? [0, 0, -1] : [0, 1, 0];
     const lk = lookAt(eye, tgt, up), asp = rw / rh;
@@ -456,7 +464,7 @@ async function main() {
     u.set([meshM(S.ctx), $('flat').checked ? 1 : 0, $('csamp').value === 'nearest' ? 1 : 0, 0], 60);
     device.queue.writeBuffer(ubuf, 0, u.subarray(0, 64));
   }
-  const hudEl = $('hud');
+  const hudEl = $('hud'), camEl = $('camv');
   function updateHud() {
     hudEl.style.display = $('hudOn').checked ? 'block' : 'none'; if (!$('hudOn').checked) return;
     const r = R.resid, bar = '#'.repeat(Math.max(0, Math.min(30, Math.round(30 * Math.min(1, r))))).padEnd(30, '.');
@@ -464,7 +472,7 @@ async function main() {
     hudEl.textContent = `${clockOn() ? 'clock ' + shownStr() + ' (' + clk.ticks + ' ticks)' : 'letter ' + curLetter()}   t = ${R.tl.toFixed(1)} s   residual |e|/|h*| = ${r.toFixed(3)}  [${bar}]  ${st}` + (R.slowed ? '   (sim slowed: substep cap)' : '');
   }
   let tPrev = performance.now(), frameCount = 0, tFps = performance.now(), fr = 0;
-  const LBL = ['c', 'kappa', 'gamma', 'nu', 's', 'sub', 'amp', 'kmax', 'seed', 'hold', 'thr', 'ramp', 'glow', 'D', 'contrast', 'iters', 'expo', 'relief', 'rgain', 'rsig', 'rsteps', 'rg', 'rnoise', 'nz', 'elev', 'az', 'cast', 'rblur', 'subray', 'kick', 'ascale', 'aspeed', 'ambient', 'ospeed'];
+  const LBL = ['c', 'kappa', 'gamma', 'nu', 's', 'sub', 'amp', 'kmax', 'seed', 'hold', 'thr', 'ramp', 'glow', 'D', 'contrast', 'iters', 'expo', 'relief', 'rgain', 'rsig', 'rsteps', 'rg', 'rnoise', 'nz', 'elev', 'az', 'cast', 'rblur', 'subray', 'kick', 'ascale', 'aspeed', 'ambient', 'ospeed', 'tgy'];
   function frame(now) {
     requestAnimationFrame(frame);
     const c = S.ctx; if (!c || S.paused) return;
@@ -474,6 +482,8 @@ async function main() {
     if ($('orbit').checked && !drag && now - dragEnd > 1500) cam.ty += rd('ospeed') * dtR;   // orbit pauses during a drag, resumes 1.5 s after release   // deg/s, dtR in s
     const a = 1 - Math.exp(-dtR * 9);
     cam.yaw += (cam.ty - cam.yaw) * a; cam.pitch += (cam.tp - cam.pitch) * a; cam.dist += (cam.td - cam.dist) * a;
+    cam.oy += (cam.toy - cam.oy) * a;
+    camEl.textContent = `camera  yaw ${(((cam.yaw % 360) + 360) % 360).toFixed(1)}  pitch ${cam.pitch.toFixed(1)}  dist ${cam.dist.toFixed(2)}  target y ${cam.oy.toFixed(2)}`;
     fitCanvas();
     if (clockOn()) { R.listStr = $('textList').value; if (!R.busy) { clk.key = clockKey(); if (clk.key !== clk.last) clockTick(); } }
     else if (R.listStr !== $('textList').value && !R.busy) { R.listStr = $('textList').value; nextLetter(0); }
@@ -685,7 +695,81 @@ async function main() {
     advance: min => { clk.off += min * 60000; return shownStr(); },
     state: () => ({ on: clockOn(), time: shownStr(), key: clk.key, ticks: clk.ticks, offsetMs: clk.off, layout: $('clockLayout').value, sec: showSec(), h12: $('clock12').value, N: S.N, resid: R.resid, nan: R.nan, fps: app.fps }),
   };
-  { const n0 = [128, 256, 512].includes(+qp.get('n')) ? +qp.get('n') : 256; $('N').value = n0; await setN(n0); }
+
+  // ---------- saved parameters (localStorage) ----------
+  // Saved: every id'd range/checkbox/text/select in #ui + camera targets (yaw/pitch/dist) + look-at offset (via its sliders).
+  // Not saved: clock time offset, panel open/fullscreen state, running state, HUD text.
+  const PKEY = 'CausticTankClock.params.v1', PVER = 1;
+  const pctl = [...document.querySelectorAll('#ui input[id], #ui select[id]')].filter(el => ['range', 'checkbox', 'text'].includes(el.type) || el.tagName === 'SELECT');
+  const pdef = {}; for (const el of pctl) pdef[el.id] = el.type === 'checkbox' ? el.checked : (el.type === 'range' ? +el.value : el.value);
+  const pdefCam = { ty: cam.ty, tp: cam.tp, td: cam.td }; app.paramDefaults = { params: pdef, camera: pdefCam };
+  const psStatus = $('psStatus'), say = t => { psStatus.textContent = t; };
+  const stamp = () => new Date().toTimeString().slice(0, 8);
+  const lsGet = () => { try { return localStorage.getItem(PKEY); } catch (e) { return null; } };
+  const lsSet = v => { try { localStorage.setItem(PKEY, v); return true; } catch (e) { return false; } };
+  const lsDel = () => { try { localStorage.removeItem(PKEY); } catch (e) {} };
+  const collect = () => { const params = {}; for (const el of pctl) params[el.id] = el.type === 'checkbox' ? el.checked : (el.type === 'range' ? +el.value : el.value);
+    return { version: PVER, params, camera: { ty: +((((cam.ty % 360) + 360) % 360).toFixed(2)), tp: +cam.tp.toFixed(2), td: +cam.td.toFixed(3) } }; };
+  // diff vs. the page defaults: only intentional changes are stored, so later default changes still reach untouched settings
+  const diffOf = full => {
+    const params = {}; for (const [id, v] of Object.entries(full.params)) { const d = pdef[id]; if (typeof v === 'number' ? Math.abs(v - d) > 1e-9 : v !== d) params[id] = v; }
+    const camera = {}, c = full.camera, wrap = x => ((x % 360) + 540) % 360 - 180;
+    if (!full.params.orbit && Math.abs(wrap(c.ty - pdefCam.ty)) > 1e-3) camera.ty = c.ty;   // with auto-orbit on, yaw is never stored
+    if (Math.abs(c.tp - pdefCam.tp) > 1e-3) camera.tp = c.tp;
+    if (Math.abs(c.td - pdefCam.td) > 1e-3) camera.td = c.td;
+    const o = { version: PVER }; if (Object.keys(params).length) o.params = params; if (Object.keys(camera).length) o.camera = camera;
+    return Object.keys(o).length > 1 ? o : null;
+  };
+  const storeDiff = () => { const d = diffOf(collect()); if (!d) { lsDel(); return 'nothing to save (all defaults)'; } return lsSet(JSON.stringify(d)) ? null : 'save failed (storage unavailable)'; };
+  // validate + apply; returns { ok, bad } counts. fire: dispatch input/change so live handlers run (import); at startup the normal startup path reads the values.
+  function applyParams(o, fire) {
+    if (!o || typeof o !== 'object' || o.version !== PVER || (o.params !== undefined && (typeof o.params !== 'object' || !o.params))) throw new Error('bad format / version');
+    let ok = 0, bad = 0;
+    for (const [id, v] of Object.entries(o.params || {})) {
+      const el = pctl.find(e => e.id === id); if (!el) { bad++; continue; }
+      let good = false;
+      if (el.type === 'checkbox') { if (typeof v === 'boolean') { el.checked = v; good = true; } }
+      else if (el.type === 'range') { if (typeof v === 'number' && isFinite(v) && v >= +el.min - 1e-9 && v <= +el.max + 1e-9) { el.value = v; good = true; } }
+      else if (el.tagName === 'SELECT') { const opt = [...el.options].find(x => x.value === String(v)); if (opt) { el.value = opt.value; good = true; } }
+      else if (typeof v === 'string' && v.length <= 200) { el.value = v; good = true; }
+      if (!good) { bad++; continue; } ok++;
+      if (fire) { el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); }
+    }
+    const c = o.camera;
+    if (c && typeof c === 'object') {
+      const nz = (x, lo, hi) => typeof x === 'number' && isFinite(x) && x >= lo && x <= hi;
+      if (c.ty !== undefined && $('orbit').checked && !fire) { /* auto-orbit on: yaw is not restored */ } else if (nz(c.ty, -1e6, 1e6)) { cam.ty = c.ty; ok++; } else if (c.ty !== undefined) bad++;
+      if (nz(c.tp, 4, 89.5)) { cam.tp = c.tp; ok++; } else if (c.tp !== undefined) bad++;
+      if (nz(c.td, 1.2, 6)) { cam.td = c.td; ok++; } else if (c.td !== undefined) bad++;
+    }
+    readTargetSliders(); if (!fire) app.snapCam();
+    return { ok, bad };
+  }
+  let noSave = false, saveTimer = 0, lastJson = '';
+  const writeNow = (label = 'saved') => { if (noSave) return; lastJson = JSON.stringify(collect().params); const err = storeDiff(); say(err || `${label} ${stamp()}`); };
+  const saveSoon = () => { clearTimeout(saveTimer); saveTimer = setTimeout(() => writeNow('auto-saved'), 300); };
+  { const ui = $('ui'); ui.addEventListener('input', saveSoon); ui.addEventListener('change', saveSoon); }
+  canvas.addEventListener('pointerup', saveSoon); canvas.addEventListener('wheel', saveSoon, { passive: true });
+  document.querySelectorAll('button[data-p]').forEach(b => b.addEventListener('click', saveSoon));
+  window.addEventListener('keydown', e => { if (!(e.target.tagName === 'INPUT' && e.target.type === 'text')) saveSoon(); });   // keyboard toggles (h/g/o/c/1-3) fire no events
+  setInterval(() => { if (JSON.stringify(collect().params) !== lastJson) saveSoon(); }, 1000);
+  const flush = () => { if (!noSave) { clearTimeout(saveTimer); try { storeDiff(); } catch (e) {} } };
+  window.addEventListener('pagehide', flush); document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush(); });
+  $('psSave').onclick = () => { clearTimeout(saveTimer); writeNow('saved'); };
+  $('psReset').onclick = () => { noSave = true; clearTimeout(saveTimer); lsDel(); const u = new URL(location.href); u.searchParams.delete('reset'); location.replace(u.toString()); };
+  $('psExport').onclick = () => { const blob = new Blob([JSON.stringify(collect(), null, 2)], { type: 'application/json' }), a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = 'CausticTankClock-params.json'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); say('exported ' + stamp()); };
+  const fileIn = document.createElement('input'); fileIn.type = 'file'; fileIn.accept = 'application/json,.json'; fileIn.style.display = 'none'; document.body.appendChild(fileIn);
+  app.importParams = text => { const r = applyParams(JSON.parse(text), true); syncMesh(); drawCompass(); clearTimeout(saveTimer); writeNow('imported+saved'); say(psStatus.textContent + ` (${r.ok} ok, ${r.bad} ignored)`); return r; };
+  fileIn.onchange = async () => { const f = fileIn.files[0]; fileIn.value = ''; if (!f) return; try { app.importParams(await f.text()); } catch (e) { say('import failed: ' + e.message); } };
+  $('psImport').onclick = () => fileIn.click();
+  document.querySelectorAll('#psBtns button').forEach(b => b.addEventListener('click', () => b.blur()));
+  if (qp.get('reset') === '1') { lsDel(); say('stored params cleared (?reset=1)'); }
+  else { const raw = lsGet();
+    if (raw !== null) { try { const r = applyParams(JSON.parse(raw), false); say(`restored (${r.ok} ok, ${r.bad} ignored)`); }
+      catch (e) { console.warn('param restore failed, using defaults', e); lsDel(); applyParams({ version: PVER, params: pdef, camera: pdefCam }, false); say('stored params invalid: reset to defaults'); } } }
+  syncMesh(); drawCompass(); lastJson = JSON.stringify(collect().params);
+  { const n0 = [128, 256, 512].includes(+qp.get('n')) ? +qp.get('n') : (+$('N').value || 256); $('N').value = n0; await setN(n0); }
   requestAnimationFrame(frame);
   app.ready = true;
 }
