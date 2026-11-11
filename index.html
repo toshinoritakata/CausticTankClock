@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Caustic Tank Clock</title>
+<style>
+html,body{margin:0;height:100%;background:#020305;color:#cfd6dc;font:12px/1.4 system-ui,sans-serif;overflow:hidden}
+canvas#view{position:fixed;inset:0;width:100vw;height:100vh;display:block;cursor:grab}
+canvas#view:active{cursor:grabbing}
+#ui{position:fixed;top:10px;left:10px;width:268px;background:rgba(10,13,16,.72);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:8px 10px;z-index:5}
+#ui summary{cursor:pointer;font-weight:600;letter-spacing:.04em;color:#e8eef2;list-style:none}
+#ui summary::-webkit-details-marker{display:none}
+.row{display:grid;grid-template-columns:92px 1fr 40px;gap:4px 8px;align-items:center;margin:5px 0}
+.row input[type=range]{width:100%}
+input[type=text]{width:100%;box-sizing:border-box;background:#14181c;color:#fff;border:1px solid #3a4046;border-radius:4px;padding:2px 6px;font:bold 15px system-ui}
+select,button{background:#1b2025;color:#dde;border:1px solid #444b52;border-radius:4px;padding:2px 6px}
+#fps{font:11px ui-monospace,monospace;color:#8fb;margin-top:4px;white-space:pre}
+body.full #ui{display:none}
+.sec{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:#7d8a94;margin-top:4px}
+.btns{display:flex;gap:4px;flex-wrap:wrap;margin:6px 0}
+details.sub{margin-top:4px;border-top:1px solid rgba(255,255,255,.08);padding-top:4px}
+details.sub>summary{color:#9ab;font-weight:500;cursor:pointer}
+#ui{max-height:calc(100vh - 24px);overflow:auto}
+#hint{position:fixed;bottom:8px;right:12px;color:#5c6770;font-size:11px}
+body.full #hint{display:none}
+</style></head><body>
+<canvas id="view"></canvas>
+<details id="ui" open>
+<summary>CAUSTIC TANK</summary>
+<div class="sec">Clock (c)</div>
+<div class="row"><label>clock mode</label><input id="clockOn" type="checkbox" checked><span></span></div>
+<div class="row"><label>clock layout</label><select id="clockLayout"><option value="stacked" selected>stacked</option><option value="single">single line</option><option value="seconds">seconds</option></select><span></span></div>
+<div class="row"><label>24h / 12h</label><select id="clock12"><option value="24" selected>24h</option><option value="12">12h</option></select><span></span></div>
+<div class="row"><label>show seconds</label><input id="clockSec" type="checkbox"><span></span></div>
+<div class="row"><label>tick kick</label><input id="kick" type="range" min="0" max="3" step="0.05" value="0.5"><span id="kickv"></span></div>
+<div class="row"><label>ambient waves</label><input id="ambOn" type="checkbox" checked><span></span></div>
+<div class="row"><label>ambient rms/h*</label><input id="ambient" type="range" min="0" max="0.15" step="0.005" value="0.02"><span id="ambientv"></span></div>
+<div class="row"><label>ambient scale</label><input id="ascale" type="range" min="2" max="8" step="0.25" value="4"><span id="ascalev"></span></div>
+<div class="row"><label>ambient speed</label><input id="aspeed" type="range" min="0.2" max="2" step="0.05" value="0.85"><span id="aspeedv"></span></div>
+<div class="sec">Sequence (letters list, clock off)</div>
+<div class="row"><label>letters</label><input type="text" id="textList" value="A,S,R"><span></span></div>
+<div class="btns"><button id="play">Pause</button><button id="replay">&#8635; Replay (r)</button><button id="next">Next (n)</button><button id="disturb">Disturb (d)</button></div>
+<div class="row"><label>hold s</label><input id="hold" type="range" min="0" max="10" step="0.5" value="4"><span id="holdv"></span></div>
+<div class="row"><label>settled thr</label><input id="thr" type="range" min="0.005" max="0.2" step="0.005" value="0.04"><span id="thrv"></span></div>
+<div class="row"><label>HUD</label><input id="hudOn" type="checkbox" checked><span></span></div>
+<div class="sec">Light</div>
+<div class="row"><label>elevation &deg;</label><input id="elev" type="range" min="30" max="90" step="1" value="65"><span id="elevv"></span></div>
+<div class="row"><label>azimuth &deg;</label><input id="az" type="range" min="0" max="360" step="5" value="30"><span id="azv"></span></div>
+<div class="row"><label>center letter</label><input id="center" type="checkbox" checked><span><canvas id="compass" width="40" height="40" title="top view: arrow = direction the light travels (+x right, +y down)"></canvas></span></div>
+<div class="row"><label>cast stretch</label><input id="cast" type="range" min="0" max="1" step="0.05" value="0.5"><span id="castv"></span></div>
+<div class="row"><label>scale-to-fit</label><input id="fit" type="checkbox" checked><span></span></div>
+<div class="row"><label>wrap edges</label><input id="wrap" type="checkbox" checked><span></span></div>
+<div class="sec">Wave dynamics</div>
+<div class="row"><label>speed c</label><input id="c" type="range" min="0.03" max="0.5" step="0.01" value="0.15"><span id="cv"></span></div>
+<div class="row"><label>restore kappa</label><input id="kappa" type="range" min="0" max="30" step="0.5" value="3"><span id="kappav"></span></div>
+<div class="row"><label>damping gamma</label><input id="gamma" type="range" min="0" max="4" step="0.05" value="0.8"><span id="gammav"></span></div>
+<div class="row"><label>viscosity nu e-5</label><input id="nu" type="range" min="0" max="60" step="0.5" value="40"><span id="nuv"></span></div>
+<div class="row"><label>dispersion s e-7</label><input id="s" type="range" min="0" max="100" step="1" value="4"><span id="sv"></span></div>
+<div class="row"><label>max substeps</label><input id="sub" type="range" min="1" max="64" step="1" value="32"><span id="subv"></span></div>
+<div class="sec">Initial disturbance</div>
+<div class="row"><label>rms e / rms h*</label><input id="amp" type="range" min="0" max="2" step="0.05" value="0.6"><span id="ampv"></span></div>
+<div class="row"><label>max k (cyc)</label><input id="kmax" type="range" min="3" max="16" step="1" value="7"><span id="kmaxv"></span></div>
+<div class="row"><label>seed</label><input id="seed" type="range" min="1" max="99" step="1" value="7"><span id="seedv"></span></div>
+<div class="row"><label>fixed seed</label><input id="det" type="checkbox" checked><span></span></div>
+<details class="sub"><summary>Solver / look</summary>
+<div class="row"><label>kappa ramp s</label><input id="ramp" type="range" min="0" max="10" step="0.5" value="0"><span id="rampv"></span></div>
+<div class="row"><label>floor glow</label><input id="glow" type="range" min="0" max="2" step="0.05" value="0"><span id="glowv"></span></div>
+<div class="row"><label>depth D</label><input id="D" type="range" min="0.3" max="2" step="0.05" value="1"><span id="Dv"></span></div>
+<div class="row"><label>contrast</label><input id="contrast" type="range" min="0.05" max="1" step="0.05" value="0.5"><span id="contrastv"></span></div>
+<div class="row"><label>iterations</label><input id="iters" type="range" min="1" max="12" step="1" value="8"><span id="itersv"></span></div>
+<div class="row"><label>exposure</label><input id="expo" type="range" min="0.3" max="3" step="0.05" value="1"><span id="expov"></span></div>
+<div class="row"><label>surface relief</label><input id="relief" type="range" min="0.5" max="6" step="0.1" value="1"><span id="reliefv"></span></div>
+<div class="row"><label>wave res N</label><select id="N"><option>128</option><option selected>256</option><option>512</option></select><span></span></div>
+<div class="row"><label>decouple mesh</label><input id="decouple" type="checkbox"><span></span></div>
+<div class="row"><label>mesh res</label><select id="mesh"><option>128</option><option>256</option><option selected>512</option></select><span></span></div>
+<div class="row"><label>caustic sampling</label><select id="csamp"><option value="bilinear">bilinear</option><option value="nearest">nearest</option></select><span></span></div>
+<div class="row"><label>ray blur x</label><input id="rblur" type="range" min="0" max="3" step="0.1" value="1"><span id="rblurv"></span></div>
+<div class="row"><label>rays / cell</label><input id="subray" type="range" min="1" max="3" step="1" value="1"><span id="subrayv"></span></div>
+<div class="row"><label>flat shading</label><input id="flat" type="checkbox"><span></span></div>
+<div class="row"><label>glass walls</label><input id="glass" type="checkbox" checked><span></span></div>
+<div class="row"><label>auto-orbit</label><input id="orbit" type="checkbox" checked><span></span></div>
+<div class="row"><label>orbit speed &deg;/s</label><input id="ospeed" type="range" min="-30" max="30" step="1" value="7"><span id="ospeedv"></span></div>
+</details>
+<details class="sub" open><summary>God rays (g)</summary>
+<div class="row"><label>god rays</label><input id="god" type="checkbox" checked><span></span></div>
+<div class="row"><label>ray gain</label><input id="rgain" type="range" min="0" max="12" step="0.1" value="1"><span id="rgainv"></span></div>
+<div class="row"><label>ray density</label><input id="rsig" type="range" min="0.05" max="3" step="0.05" value="0.8"><span id="rsigv"></span></div>
+<div class="row"><label>ray steps</label><input id="rsteps" type="range" min="8" max="96" step="4" value="32"><span id="rstepsv"></span></div>
+<div class="row"><label>anisotropy g</label><input id="rg" type="range" min="0" max="0.9" step="0.05" value="0.5"><span id="rgv"></span></div>
+<div class="row"><label>dust noise</label><input id="rnoise" type="range" min="0" max="1" step="0.05" value="0.3"><span id="rnoisev"></span></div>
+<div class="row"><label>volume slices</label><input id="nz" type="range" min="8" max="48" step="4" value="24"><span id="nzv"></span></div>
+<div class="row"><label>volume res</label><select id="volres"><option>128</option><option selected>256</option><option>512</option></select><span></span></div>
+</details>
+<div class="btns"><button data-p="1">1 top</button><button data-p="2">2 3/4</button><button data-p="3">3 side</button><button id="fs">F full</button></div>
+<div id="fps">starting...</div>
+</details>
+<div id="hud" style="position:fixed;bottom:22px;left:0;right:0;text-align:center;font:13px ui-monospace,monospace;color:#9fd;display:none;pointer-events:none"></div>
+<div id="hint">drag: orbit &middot; wheel: zoom &middot; space: play/pause &middot; r: replay &middot; n: next &middot; d: disturb &middot; 1/2/3: views &middot; o: orbit &middot; g: god rays &middot; f: fullscreen</div>
+<script>import('./app.js?v=' + Date.now()).catch(e => { document.getElementById('fps').textContent = 'load error: ' + e; console.error(e); });</script>
+</body></html>
