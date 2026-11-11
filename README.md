@@ -5,6 +5,13 @@ WebGPU のみで動き、ビルド不要です。
 
 A clock that shows the current time (24h `HHMM`) as the caustic light pattern on the floor of a water tank. Pure WebGPU, no build step.
 
+## デモ / Live demo
+
+https://toshinoritakata.github.io/CausticTankClock/
+
+WebGPU 対応のブラウザ（Chrome など）で開いてください。見る人のブラウザのローカル時刻を表示します。
+Open it in a WebGPU-capable browser (e.g. Chrome). It shows the viewer's local time.
+
 ## 仕組み / How it works
 
 - 描きたい数字（目標のコースティクス）から、それを水底に作る**水面の形 h\*** を逆算します。
