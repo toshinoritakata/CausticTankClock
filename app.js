@@ -414,7 +414,7 @@ async function main() {
   }
   // ---------- camera ----------
   const PRESETS = { 1: { yaw: 0, pitch: 89.5, dist: 3.4 }, 2: { yaw: 22, pitch: 52, dist: 3.3 }, 3: { yaw: 8, pitch: 14, dist: 3.1 } };
-  const cam = { yaw: 22, pitch: 52, dist: 3.3, ty: 22, tp: 52, td: 3.3, vy: 0, vp: 0 };
+  const cam = { yaw: 22, pitch: 21, dist: 3.3, ty: 22, tp: 21, td: 3.3, vy: 0, vp: 0 };
   const rad = Math.PI / 180; app.cam = cam;
   function preset(k) { const p = PRESETS[k]; // take the shortest way round in yaw
     cam.ty = p.yaw; cam.tp = p.pitch; cam.td = p.dist; cam.yaw = cam.ty + ((((cam.yaw - cam.ty) % 360) + 540) % 360 - 180); }
