@@ -1,4 +1,4 @@
-// Caustic tank 3D "relax": the water surface is a real wave field h = h* + e.  h* (designed surface) comes from the live WebGPU
+// CausticTankClock: the water surface is a real wave field h = h* + e.  h* (designed surface) comes from the live WebGPU
 // Monge-Ampere solver (solver.js, run only when letter/settings change); e obeys a damped wave equation with restoring force towards 0
 // (relax.js), so lively waves settle into h*.  The forward splat+blur caustic and the mesh are computed from h every frame.
 const $ = id => document.getElementById(id);
