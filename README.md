@@ -34,15 +34,20 @@ python3 -m http.server 8000
 
 | 操作 | 内容 |
 |---|---|
-| `c` | 時計モードの切り替え |
-| `o` | 自動回転の切り替え（速さはスライダー） |
-| `1` `2` `3` | カメラ位置（真上 / 斜め / 横） |
+| `c` | 時計モードの切り替え（オフのとき、文字リストの順に表示） |
+| `o` | 自動回転の切り替え（既定でオン、速さはスライダー） |
+| `1` `2` `3` | カメラ位置（真上 / 斜め / 横）。自動回転は止まりません |
 | `g` | ゴッドレイの切り替え |
-| `f` | 全画面 |
+| `h` | 下部の HUD 表示の切り替え |
+| `f` / `Esc` | 全画面（パネルを隠す） / パネルを戻す |
 | `d` / `r` | 波を揺らす / 最初から |
+| `n` / `Space` | 次の文字（時計オフ時） / 一時停止 |
 | ドラッグ / ホイール | 回転 / ズーム |
+| 右ドラッグ / `Shift` + ドラッグ | 注視点の高さ（target y）を上下に動かす |
 
-パネルの「Light」で光の高度・方位、「Solver / look」で波の解像度（128 / 256 / 512）やコースティクスの粗さを変えられます。
+パネルの「Clock」で表示（stacked など）、24 時間 / 12 時間、秒の表示、ambient waves（常に起こす小さな波）の強さを変えられます。「Light」で光の高度・方位、「Solver / look」で波の解像度（128 / 256 / 512）やコースティクスの粗さを変えられます。URL の `?n=128`（`256` / `512`）で、波の解像度を指定して起動できます。
+
+Keys: `c` clock on/off, `o` auto-orbit (on by default), `1`/`2`/`3` camera presets (orbit keeps running), `g` god rays, `h` HUD, `f`/`Esc` hide/show the panel (fullscreen), `d` disturb, `r` replay, `n` next letter / `Space` pause (letter mode). Drag to orbit, wheel to zoom, right-drag or Shift+drag to move the look-at height. `?n=128|256|512` sets the wave resolution at startup.
 
 ## パラメータの保存 / Saving parameters
 
@@ -59,6 +64,18 @@ Panel settings (sliders, checkboxes, selects, text, camera yaw/pitch/distance an
 - `godrays.js` — ゴッドレイの 3D 光データ
 - `render.js` — 水面・ガラス・床・環境の描画シェーダ
 - `cpu.js` / `solver_old.js` — 検証用の CPU 参照実装と旧ソルバー（デバッグ用フック）
+
+## 展示での起動 / Exhibition launch
+
+URL に `?full=1` を付けると、操作パネルと下部の HUD 表示を隠し、マウスカーソルも消した状態で起動します。ブラウザのフルスクリーンは、ユーザー操作なしには開始できないため、Chrome のキオスクモードと組み合わせます（macOS）。
+
+```
+open -a "Google Chrome" --args --kiosk "https://toshinoritakata.github.io/CausticTankClock/?full=1"
+```
+
+終了は `Cmd + Q`。`Esc` または `F` でパネルが再表示されます。保存したパラメータ（変更した設定のみ）は、そのまま適用されます。
+
+Add `?full=1` to the URL to start with the panel, bottom HUD text and mouse cursor hidden. Browsers cannot enter fullscreen without a user gesture, so combine it with Chrome's kiosk mode (command above; quit with `Cmd + Q`; `Esc` or `F` brings the panel back).
 
 ## 動作環境 / Requirements
 
