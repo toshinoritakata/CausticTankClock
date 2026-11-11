@@ -5,6 +5,8 @@
 html,body{margin:0;height:100%;background:#020305;color:#cfd6dc;font:12px/1.4 system-ui,sans-serif;overflow:hidden}
 canvas#view{position:fixed;inset:0;width:100vw;height:100vh;display:block;cursor:grab}
 canvas#view:active{cursor:grabbing}
+body.full canvas#view{cursor:none}
+body.kiosk.full #hud{display:none !important}
 #ui{position:fixed;top:10px;left:10px;width:268px;background:rgba(10,13,16,.72);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:8px 10px;z-index:5}
 #ui summary{cursor:pointer;font-weight:600;letter-spacing:.04em;color:#e8eef2;list-style:none}
 #ui summary::-webkit-details-marker{display:none}

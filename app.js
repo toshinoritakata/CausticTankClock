@@ -670,6 +670,7 @@ async function main() {
   };
   $('fs').onclick = toggleFull;
   document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement) document.body.classList.remove('full'); });
+  if (qp.get('full') === '1') document.body.classList.add('full', 'kiosk');   // exhibition: start with the panel hidden (pair with Chrome --kiosk)
   document.querySelectorAll('button[data-p]').forEach(b => b.onclick = () => app.preset(+b.dataset.p));
   window.addEventListener('keydown', e => {
     if (e.target.tagName === 'INPUT' && e.target.type === 'text') return;
