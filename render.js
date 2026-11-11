@@ -22,6 +22,15 @@ const WALL_TOP       : f32 = 0.15;                        // glass wall height a
 const TABLE_GLOSS    : f32 = 0.2;
 const SPILL_GAIN     : f32 = 0.10;                        // light spilled on table around tank
 const EXPOSURE       : f32 = 1.0;
+const PHASE_KNEE     : f32 = 1.0;                        // god-ray phase factor: unchanged below, soft-limited above (HG forward peak at g=0.5 is ~4.5x -> blows out when looking into the light)
+const PHASE_MAX      : f32 = 1.8;
+const RAY_KNEE       : f32 = 0.6;                        // god-ray radiance (linear, pre-tonemap): unchanged below, soft-limited above (long shafts summed to >>1 and clipped to flat white)
+const RAY_MAX        : f32 = 1.4; 
+const GLASS_RAY_KNEE : f32 = 0.25;                       // same for the side-glass view of the water column (drawn on top of an already bright pane)
+const GLASS_RAY_MAX  : f32 = 0.55;
+const GLASS_KNEE     : f32 = 0.16;                       // glass reflection (linear): grazing Fresnel x big strip light otherwise clips; soft-limited above the knee
+const GLASS_MAX      : f32 = 0.32;
+const GLASS_BACK     : f32 = 0.5;                        // far-side panes are seen through the water and the near pane: their reflection is weaker (they were stacking to flat white)
 const VIEW_SLOPE     : f32 = 0.3;                       // LOOK ONLY: scales surface slopes used for refraction/reflection shading (1 = physical)
 // ============================================================
 
@@ -72,6 +81,8 @@ fn keyRot(d:vec3f)->vec3f {
   return a2*eh+vec3f(0.0,b2,0.0)+p*ep;
 }
 
+// identity below knee, tanh roll-off above it towards mx (per channel)
+fn softcap(x:vec3f, knee:f32, mx:f32)->vec3f { let e=max(x-vec3f(knee),vec3f(0.0)); return min(x,vec3f(knee))+(mx-knee)*tanh(e/(mx-knee)); }
 // ---------- god rays: ray-march of the caustic light volume along a view ray inside the water ----------
 fn ign(p:vec2f)->f32 { return fract(52.9829189*fract(dot(p,vec2f(0.06711056,0.00583715)))); }
 fn h13(p:vec3f)->f32 { var q=fract(p*0.1031); q+=dot(q,q.zyx+31.32); return fract((q.x+q.y)*q.z); }
@@ -90,7 +101,8 @@ fn godRays(P:vec3f, r:vec3f, tEnd:f32, px:vec2f)->vec3f {
   let S=max(1,i32(u.g2.x)); let ds=tEnd/f32(S); let sig=u.g.z; let ga=u.g.w;
   let Lw=u.lw.xyz; let cs=-dot(Lw,r);   // light travel dir inside the water (refracted); cos(scatter angle) = dot(L, -r)
   let hg=(1.0-ga*ga)/pow(max(1.0+ga*ga-2.0*ga*cs,1e-3),1.5);
-  let phase=0.3+0.7*hg;
+  var phase=0.3+0.7*hg;
+  if (phase>PHASE_KNEE) { phase=PHASE_KNEE+(PHASE_MAX-PHASE_KNEE)*tanh((phase-PHASE_KNEE)/(PHASE_MAX-PHASE_KNEE)); }
   let j=ign(px);
   // transmittance (view path + light path) advanced multiplicatively: both are exp of a linear function of s
   let ilz=1.0/max(-Lw.y,0.2);   // light path length per unit depth
@@ -103,7 +115,7 @@ fn godRays(P:vec3f, r:vec3f, tEnd:f32, px:vec2f)->vec3f {
     acc+=min(volSample(p),14.0)*T*mix(0.25,1.0,smoothstep(0.0,0.3,-p.y));   // shallow light is ~uniform (no shafts yet): de-emphasise the glowing band under the surface
     T*=stepT;
   }
-  return acc*ds*sig*u.g.y*phase*LIGHT_COL*vec3f(0.85,1.0,1.0);
+  return softcap(acc*ds*sig*u.g.y*phase*LIGHT_COL*vec3f(0.85,1.0,1.0),RAY_KNEE,RAY_MAX);
 }
 
 fn aces(x:vec3f)->vec3f { return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14), vec3f(0.0), vec3f(1.0)); }
@@ -249,10 +261,11 @@ struct FS { @builtin(position) pos:vec4f, @location(0) w:vec3f, @location(1) uv:
   var n=vec3f(0.0,0.0,1.0);
   if (ii==1u) { n=vec3f(0.0,0.0,-1.0); } else if (ii==2u) { n=vec3f(1.0,0.0,0.0); } else if (ii==3u) { n=vec3f(-1.0,0.0,0.0); }
   let rd=normalize(i.w-u.eye.xyz);
-  if (dot(n,rd)>0.0) { n=-n; }
+  var back=1.0;
+  if (dot(n,rd)>0.0) { n=-n; back=GLASS_BACK; }   // far pane (seen from inside)
   let cosv=clamp(-dot(n,rd),0.0,1.0);
   let F=0.05+0.95*pow(1.0-cosv,4.0);
-  let refl=env(reflect(rd,n))*F*GLASS_REFL;
+  let refl=softcap(env(reflect(rd,n))*F*GLASS_REFL,GLASS_KNEE,GLASS_MAX)*back;
   let dTop=WALL_TOP-i.lc.y; let dBot=i.lc.y+u.a.x; let dSide=0.5-abs(i.lc.x);
   let dE=min(dTop,min(dBot,dSide));
   let edge=smoothstep(GLASS_EDGE_W,0.0,dE);
@@ -281,7 +294,8 @@ struct FS { @builtin(position) pos:vec4f, @location(0) w:vec3f, @location(1) uv:
       for (var k=1; k<=NS; k++) { let tt=te*f32(k)/f32(NS); let pp=q+rd*tt; if (pp.y>bilH(clamp(pp.xz+vec2f(0.5),vec2f(0.0),vec2f(1.0)))*u.a.y) { tb=tt; break; } ta=tt; }
       if (tb>0.0) { for (var k=0; k<6; k++) { let tm=0.5*(ta+tb); let pp=q+rd*tm; if (pp.y>bilH(clamp(pp.xz+vec2f(0.5),vec2f(0.0),vec2f(1.0)))*u.a.y) { tb=tm; } else { ta=tm; } } te=0.5*(ta+tb); }
       let ins=godRays(q,rd,te,i.pos.xy);
-      return vec4f(outc(rgb)+outc(ins)*select(1.0,0.0,u.g.x<0.5), a);
+      let base=outc(rgb); let add=outc(softcap(ins,GLASS_RAY_KNEE,GLASS_RAY_MAX));
+      return vec4f(base+add-base*add, a);   // screen blend instead of a plain add: cannot clip past 1
     }
   }
   return vec4f(outc(rgb), a);
