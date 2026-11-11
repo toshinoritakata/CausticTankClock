@@ -58,7 +58,16 @@ Panel settings (sliders, checkboxes, selects, text, camera yaw/pitch/distance an
 ## 構成 / Files
 
 - `index.html` — UI とモジュールの読み込み
-- `app.js` — 全体の制御（時計、アニメーション、カメラ、描画パス）
+- `app.js` — 全体の制御（状態、ソルバー再計算、フレームループ、各モジュールの読み込み）
+- `gpu.js` — WebGPU の初期化、描画パイプライン、N ごとのバッファとパイプライン
+- `passes.js` — 計算パスのエンコード（ソルバー、波のステップ、コースティクス、ゴッドレイ）
+- `glyph.js` — 文字・時刻のグリフ描画と、床面への影のひずみ
+- `clock.js` — 時計の表示時刻、レイアウト、グリフのキー
+- `dynamics.js` — 波の安定条件（時間刻み）と、連続的な環境波の外力
+- `camera.js` — カメラの状態、プリセット、ドラッグ・ホイール操作、行列
+- `ui.js` — パネルの配線、キー操作、全画面、HUD 表示
+- `params.js` — 設定の保存・復元・書き出し・読み込み（localStorage）
+- `debug.js` — 検証用のデバッグフック（`window.relax` / `window.clock`）
 - `solver.js` / `oblique.js` — 逆算ソルバーと斜め入射の光学
 - `relax.js` — 波の運動方程式（減衰・復元力・連続的な外力）
 - `godrays.js` — ゴッドレイの 3D 光データ
