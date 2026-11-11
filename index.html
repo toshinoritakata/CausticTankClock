@@ -19,8 +19,6 @@ body.full #ui{display:none}
 details.sub{margin-top:4px;border-top:1px solid rgba(255,255,255,.08);padding-top:4px}
 details.sub>summary{color:#9ab;font-weight:500;cursor:pointer}
 #ui{max-height:calc(100vh - 24px);overflow:auto}
-#hint{position:fixed;bottom:8px;right:12px;color:#5c6770;font-size:11px}
-body.full #hint{display:none}
 </style></head><body>
 <canvas id="view"></canvas>
 <details id="ui" open>
@@ -93,6 +91,5 @@ body.full #hint{display:none}
 <div id="fps">starting...</div>
 </details>
 <div id="hud" style="position:fixed;bottom:22px;left:0;right:0;text-align:center;font:13px ui-monospace,monospace;color:#9fd;display:none;pointer-events:none"></div>
-<div id="hint">drag: orbit &middot; wheel: zoom &middot; space: play/pause &middot; r: replay &middot; n: next &middot; d: disturb &middot; 1/2/3: views &middot; o: orbit &middot; g: god rays &middot; f: fullscreen</div>
 <script>import('./app.js?v=' + Date.now()).catch(e => { document.getElementById('fps').textContent = 'load error: ' + e; console.error(e); });</script>
 </body></html>
