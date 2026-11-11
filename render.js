@@ -6,10 +6,10 @@ export const COMMON = /* wgsl */`
 // ===================== LOOK (tune here) =====================
 const IOR            : f32 = 1.33;                       // must match solver (nw = 1.33)
 const ABSORB         : vec3f = vec3f(0.55, 0.14, 0.07);  // per-channel water absorption per unit length
-const SCATTER_COL    : vec3f = vec3f(0.003, 0.021, 0.026);  // in-scattered water body colour (lit by floor glow)
+const SCATTER_COL    : vec3f = vec3f(0.0045, 0.019, 0.023);  // in-scattered water body colour (lit by floor glow)
 const FLOOR_ALBEDO   : vec3f = vec3f(0.88, 0.90, 0.92);
 const FLOOR_AMBIENT  : f32 = 0.004;
-const FLOOR_GAIN     : f32 = 2.6;                        // brightness of the lit caustic on the floor
+const FLOOR_GAIN     : f32 = 1.9;                        // brightness of the lit caustic on the floor
 const LIGHT_COL      : vec3f = vec3f(1.0, 0.95, 0.86);
 const BOX_GAIN       : f32 = 6.0;                        // overhead soft box (reflected in water)
 const STRIP_GAIN     : f32 = 4.0;                        // side / back strip lights
@@ -21,9 +21,11 @@ const GLASS_ALPHA    : f32 = 1.1;                        // glass wall opacity f
 const GLASS_EDGE_W   : f32 = 0.006;                       // bright edge half width (world units)
 const WALL_TOP       : f32 = 0.15;                        // glass wall height above water level
 const TABLE_GLOSS    : f32 = 0.2;
-const SPILL_GAIN     : f32 = 0.16;                        // light spilled on table around tank
+const SPILL_GAIN     : f32 = 0.09;                        // light spilled on table around tank
 const PHASE_KNEE     : f32 = 1.0;                        // god-ray phase factor: unchanged below, soft-limited above (HG forward peak at g=0.5 is ~4.5x -> blows out when looking into the light)
 const PHASE_MAX      : f32 = 1.8;
+const RAY_FLOOR      : f32 = 0.6;                        // god rays: volume level subtracted before scattering (removes the uniform fog, keeps the shaft contrast)
+const RAY_REGAIN     : f32 = 1.3;                        // gain applied after the floor subtraction (restores shaft peak strength)
 const VIEW_SLOPE     : f32 = 0.3;                       // LOOK ONLY: scales surface slopes used for refraction/reflection shading (1 = physical)
 // ============================================================
 
@@ -103,10 +105,10 @@ fn godRays(P:vec3f, r:vec3f, tEnd:f32, px:vec2f)->vec3f {
   var acc=vec3f(0.0);
   for (var i=0; i<S; i++) {
     let p=P+r*((f32(i)+j)*ds);
-    acc+=min(volSample(p),14.0)*T*mix(0.25,1.0,smoothstep(0.0,0.3,-p.y));   // shallow light is ~uniform (no shafts yet): de-emphasise the glowing band under the surface
+    acc+=max(min(volSample(p),14.0)-RAY_FLOOR,0.0)*RAY_REGAIN*T*mix(0.25,1.0,smoothstep(0.0,0.3,-p.y));   // shallow light is ~uniform (no shafts yet): de-emphasise the glowing band under the surface
     T*=stepT;
   }
-  return acc*ds*sig*u.g.y*phase*LIGHT_COL*vec3f(0.85,1.0,1.0);
+  return acc*ds*sig*u.g.y*phase*LIGHT_COL*vec3f(0.97,1.0,1.0);
 }
 
 
@@ -341,9 +343,9 @@ struct R { t:f32, amp:f32, ambient:f32, pad:f32, clk:array<vec4f,8> }  // clk: (
 // Final pass: the scene is rendered + blended LINEAR into an rgba16float target; exposure + ACES + gamma happen once, here.
 const FINAL_COMMON = /* wgsl */`
 const EXPOSURE : f32 = 2.0;                        // linear gain before the curve
-const GRADE_TINT : vec3f = vec3f(0.96, 1.0, 1.03); // linear teal-leaning white balance (pre-curve)
+const GRADE_TINT : vec3f = vec3f(0.98, 1.0, 1.02); // linear teal-leaning white balance (pre-curve)
 const GRADE_SAT : f32 = 1.15;                      // saturation boost after the curve (1 = none)
-const GRADE_MID : f32 = 1.25;                      // >1 darkens mid-tones (more contrast between dark water and bright caustics)
+const GRADE_MID : f32 = 1.38;                      // >1 darkens mid-tones (more contrast between dark water and bright caustics)
 @group(0) @binding(0) var hdr:texture_2d<f32>;
 @vertex fn vs(@builtin(vertex_index) vi:u32) -> @builtin(position) vec4f {
   let p = array<vec2f,3>(vec2f(-1.0,-1.0), vec2f(3.0,-1.0), vec2f(-1.0,3.0));
