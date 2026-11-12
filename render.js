@@ -13,6 +13,7 @@ const FLOOR_GAIN     : f32 = 1.9;                        // brightness of the li
 const LIGHT_COL      : vec3f = vec3f(1.0, 0.95, 0.86);
 const BOX_GAIN       : f32 = 6.0;                        // overhead soft box (reflected in water)
 const STRIP_GAIN     : f32 = 4.0;                        // side / back strip lights
+const STRIP_WARM     : vec3f = vec3f(0.877, 0.778, 0.675);  // warm side strip colour (old 1,0.78,0.55 pulled ~55% toward neutral: the glass reflection no longer reads cream/orange)
 const F0_WATER       : f32 = 0.02;
 const SUN_POW        : f32 = 900.0;
 const SUN_INT        : f32 = 18.0;
@@ -127,7 +128,7 @@ fn env(d:vec3f)->vec3f {
   if (ax > 0.15) {
     let q = vec2f(d.y, d.z) / ax;
     let s = smoothstep(0.12, 0.0, max(abs(q.x - 0.35) - 0.9, abs(q.y - 0.25) - 0.05));
-    c += STRIP_GAIN * s * select(vec3f(1.0,0.78,0.55), vec3f(0.55,0.75,1.0), d.x < 0.0);
+    c += STRIP_GAIN * s * select(STRIP_WARM, vec3f(0.55,0.75,1.0), d.x < 0.0);
   }
   if (d.z < -0.15) {
     let q = vec2f(d.x, d.y) / (-d.z);
