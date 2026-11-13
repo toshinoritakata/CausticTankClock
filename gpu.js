@@ -37,7 +37,12 @@ export async function readBuffer(device, buf, size) {
 // ---------- render pipelines + MSAA/depth/HDR targets ----------
 const fs_name = f => f.endsWith('-srgb') ? 'fsSrgb' : 'fs';   // *-srgb swapchain: hardware applies the OETF, so skip the manual gamma
 export async function createRenderer({ device, gctx, fmt, canvas, qp, SCENE_WGSL, BG_WGSL, FINAL_WGSL, BLOOM_WGSL }) {
-  const sceneMod = await compileWGSL(device, SCENE_WGSL, 'scene'), bgMod = await compileWGSL(device, BG_WGSL, 'bg'), finMod = await compileWGSL(device, FINAL_WGSL, 'final'), blMod = await compileWGSL(device, BLOOM_WGSL, 'bloom');
+  // default: shade once per pixel. ?ss=1: shade once per MSAA sample (4x supersampled shading, ~1.6x the frame cost)
+  const ss0 = qp.get('ss') !== '1';
+  // per-sample shading runs the god-ray march once per MSAA sample with a different jitter each: use 1/4 of the steps per sample (same total cost, the resolve averages the stratified jitter)
+  const grDiv = ss0 ? '1' : String(Math.max(1, +qp.get('grdiv') || SAMPLES));
+  const sceneSrc = (ss0 ? SCENE_WGSL.replaceAll('@interpolate(perspective, sample) ', '') : SCENE_WGSL).replaceAll('GR_DIV', grDiv).replaceAll('SHADE_SPP', ss0 ? '1.0' : SAMPLES + '.0');
+  const sceneMod = await compileWGSL(device, sceneSrc, 'scene'), bgMod = await compileWGSL(device, BG_WGSL.replaceAll('GR_DIV', grDiv).replaceAll('SHADE_SPP', ss0 ? '1.0' : SAMPLES + '.0'), 'bg'), finMod = await compileWGSL(device, FINAL_WGSL, 'final'), blMod = await compileWGSL(device, BLOOM_WGSL, 'bloom');
   const VF = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT;
   const bgl = device.createBindGroupLayout({ entries: [
     { binding: 0, visibility: VF, buffer: { type: 'uniform' } },
@@ -60,7 +65,7 @@ export async function createRenderer({ device, gctx, fmt, canvas, qp, SCENE_WGSL
     water: mkRP(sceneMod, 'vsWater', 'fsWater', { blend }), glass: mkRP(sceneMod, 'vsGlass', 'fsGlass', { blend, dw: false }), rim: mkRP(sceneMod, 'vsRim', 'fsRim'),
   };
   const FR = GPUShaderStage.FRAGMENT, lsamp = device.createSampler({ magFilter: 'linear', minFilter: 'linear', addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge' });
-  const fbgl = device.createBindGroupLayout({ entries: [{ binding: 0, visibility: FR, texture: { sampleType: 'unfilterable-float' } },
+  const fbgl = device.createBindGroupLayout({ entries: [{ binding: 0, visibility: FR, texture: { sampleType: 'unfilterable-float', multisampled: true } },   // final pass resolves the 4 samples itself (tone-weighted)
     { binding: 1, visibility: FR, texture: { sampleType: 'float' } }, { binding: 2, visibility: FR, sampler: { type: 'filtering' } }] });
   // bloom: down passes write level i from level i-1 (level -1 = hdrTex), up passes add level i+1 onto level i
   const blgl = device.createBindGroupLayout({ entries: [{ binding: 0, visibility: FR, texture: { sampleType: 'float' } }, { binding: 1, visibility: FR, sampler: { type: 'filtering' } }] });
@@ -84,19 +89,19 @@ export async function createRenderer({ device, gctx, fmt, canvas, qp, SCENE_WGSL
     if (canvas.width !== w || canvas.height !== h || !msaaTex) {
       canvas.width = w; canvas.height = h; size.w = w; size.h = h;
       msaaTex?.destroy(); depthTex?.destroy(); hdrTex?.destroy(); for (const t of blTex) t.destroy();
-      msaaTex = device.createTexture({ size: [w, h], sampleCount: SAMPLES, format: HDR, usage: GPUTextureUsage.RENDER_ATTACHMENT });
+      msaaTex = device.createTexture({ size: [w, h], sampleCount: SAMPLES, format: HDR, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
       hdrTex = device.createTexture({ size: [w, h], format: HDR, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
       blTex = []; for (let i = 0; i < BLOOM_LEVELS; i++) blTex.push(device.createTexture({ size: [Math.max(1, w >> (i + 1)), Math.max(1, h >> (i + 1))], format: HDR, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING }));
       const blBG = t => device.createBindGroup({ layout: blgl, entries: [{ binding: 0, resource: t.createView() }, { binding: 1, resource: lsamp }] });
       blDownBG = blTex.map((_, i) => blBG(i ? blTex[i - 1] : hdrTex)); blUpBG = blTex.map((_, i) => i + 1 < BLOOM_LEVELS ? blBG(blTex[i + 1]) : null);
-      finalBG = device.createBindGroup({ layout: fbgl, entries: [{ binding: 0, resource: hdrTex.createView() }, { binding: 1, resource: blTex[0].createView() }, { binding: 2, resource: lsamp }] });
+      finalBG = device.createBindGroup({ layout: fbgl, entries: [{ binding: 0, resource: msaaTex.createView() }, { binding: 1, resource: blTex[0].createView() }, { binding: 2, resource: lsamp }] });
       depthTex = device.createTexture({ size: [w, h], sampleCount: SAMPLES, format: 'depth24plus', usage: GPUTextureUsage.RENDER_ATTACHMENT });
     }
   }
   // meshVerts = water mesh resolution (vertices per side)
   function encodeRender(enc, c, meshVerts) {
     const rp = enc.beginRenderPass({
-      colorAttachments: [{ view: msaaTex.createView(), resolveTarget: hdrTex.createView(), loadOp: 'clear', storeOp: 'discard', clearValue: { r: 0, g: 0, b: 0, a: 1 } }],
+      colorAttachments: [{ view: msaaTex.createView(), resolveTarget: hdrTex.createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }],
       depthStencilAttachment: { view: depthTex.createView(), depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'discard' },
     });
     rp.setBindGroup(0, c.renderBG);

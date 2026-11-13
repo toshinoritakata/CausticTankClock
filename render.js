@@ -22,12 +22,12 @@ const TOP_W          : f32 = 0.07;                       // bar width: gaussian 
 const TOP_BAR_A      : vec4f = vec4f(-0.34, 0.08, 0.58, 0.0);  // bar A (key frame): centre q, half length, axis (0 = along q.y)
 const TOP_BAR_B      : vec4f = vec4f(0.18, 0.78, 0.30, 1.0);   // bar B: placed so the reflection over the digits misses both bars for presets 1/2 at elev 35..90 (az 30)
 const REFL_OVER_FLOOR: f32 = 3.0;                        // water env reflection x 1/(1 + this x luminance of the floor seen through it): the overhead bars never wash a grey band over the lit digits
-const REFL_ROUGH     : f32 = 0.035;                      // water reflection blur: 4 extra env taps this far around the mirror direction (fine ripples)
+const WATER_ROUGH    : f32 = 0.02;                       // GGX alpha of the water surface from ripples finer than the grid (assumed: a calm tank; open sea in light wind is ~0.05-0.1)
+const SUN_ALPHA      : f32 = 0.0023;                     // the sun's 0.53 deg disc as extra GGX alpha (half its angular radius, in radians)
+const SPEC_MAX       : f32 = 64.0;                       // firefly guard on the sun highlight (scene radiance)
+const EDGE_ROUGH     : f32 = 0.1;                        // GGX alpha of the polished glass edge faces
 const STRIP_GAIN     : f32 = 4.0;                        // side / back strip lights
 const STRIP_WARM     : vec3f = vec3f(0.877, 0.778, 0.675);  // warm side strip colour (old 1,0.78,0.55 pulled ~55% toward neutral: the glass reflection no longer reads cream/orange)
-const F0_WATER       : f32 = 0.02;
-const SUN_POW        : f32 = 900.0;
-const SUN_INT        : f32 = 18.0;
 const GLASS_REFL     : f32 = 0.25;                       // glass wall reflection colour strength (linear)
 const GLASS_ALPHA    : f32 = 1.1;                        // glass wall opacity from the Fresnel term (how much it hides what is behind)
 const GLASS_TOP      : f32 = 2.0;                        // overhead lights as seen in the glass (x TOP_GAIN = 4 as accepted; the old soft box was 6 over a much larger area)
@@ -38,7 +38,6 @@ const EDGE_PIPE      : f32 = 1.3;                        // light from the lit w
 const EDGE_FALL      : f32 = 0.9;                        // piped light falloff with height above the floor (per unit)
 const EDGE_AMB       : f32 = 0.006;                      // light the whole pane collects from the glowing water body (x (0.3 + avgC), more near the floor): edges never read as black bars
 const EDGE_KEY       : f32 = 0.12;                       // key light falling on the pane faces, trapped and carried to the edges (x |pane normal . light|): sun-side panes glow brighter
-const EDGE_SPEC      : f32 = 0.5;                        // soft key-light glint on the polished edge faces (moves along the rim with the view)
 const RIM_MINPX      : f32 = 0.8;                        // edge faces never thinner than 2 x this (framebuffer px): the top rim stays a stable thin line at grazing pitch
 const EDGE_MIN       : f32 = 0.02;                       // minimum glow of the edge faces (light trapped in the glass always exits at the edge)
 const UNDER_GAIN     : f32 = 0.8;                        // water underside (TIR mirror + Snell's window) overall level
@@ -119,12 +118,13 @@ fn volSample(p:vec3f)->f32 {
 // P: start (on the water surface / glass), r: unit direction of travel (towards the far side), tEnd: length of the in-water segment
 fn godRays(P:vec3f, r:vec3f, tEnd:f32, px:vec2f)->vec3f {
   if (u.g.x<0.5 || tEnd<=1e-4) { return vec3f(0.0); }
-  let S=max(1,i32(u.g2.x)); let ds=min(tEnd,3.0)/f32(S); let sig=u.g.z; let ga=u.g.w;   // in-tank path <= ~1.8; callers' t / tw blow up for near-horizontal rays (1e9 sentinel) -> one-pixel HDR fireflies
+  let S=max(1,i32(u.g2.x)/GR_DIV); let ds=min(tEnd,3.0)/f32(S); let sig=u.g.z; let ga=u.g.w;   // in-tank path <= ~1.8; callers' t / tw blow up for near-horizontal rays (1e9 sentinel) -> one-pixel HDR fireflies
   let Lw=u.lw.xyz; let cs=-dot(Lw,r);   // light travel dir inside the water (refracted); cos(scatter angle) = dot(L, -r)
   let hg=(1.0-ga*ga)/pow(max(1.0+ga*ga-2.0*ga*cs,1e-3),1.5);
   var phase=0.3+0.7*hg;
   if (phase>PHASE_KNEE) { phase=PHASE_KNEE+(PHASE_MAX-PHASE_KNEE)*tanh((phase-PHASE_KNEE)/(PHASE_MAX-PHASE_KNEE)); }
-  let j=ign(px);
+  // per-sample shading (GR_DIV>1): stratify the jitter across the 4 MSAA samples (standard 4x pattern: sample x offsets .125/.375/.625/.875 -> index 0..3) so the resolve averages a full-period jitter
+  let j=select(ign(px), fract(ign(floor(px))+floor(fract(px.x)*4.0)*0.25), GR_DIV>1);
   // transmittance (view path + light path) advanced multiplicatively: both are exp of a linear function of s
   let ilz=1.0/max(-Lw.y,0.2);   // light path length per unit depth
   let kv=ABSORB*0.5+vec3f(sig)+ABSORB*0.6*ilz*max(-r.y,0.0);   // max: an upward-bent ray (steep wave at grazing view) must not turn the decay into growth (HDR fireflies)
@@ -140,6 +140,28 @@ fn godRays(P:vec3f, r:vec3f, tEnd:f32, px:vec2f)->vec3f {
 }
 
 
+// exact unpolarised Fresnel reflectance of a dielectric; ci = cos of incidence, eta = n_transmitted / n_incident (total internal reflection -> 1)
+fn fresnelDiel(ci:f32, eta:f32)->f32 {
+  let g2=eta*eta-1.0+ci*ci; if (g2<=0.0) { return 1.0; }
+  let g=sqrt(g2); let a=(g-ci)/(g+ci); let b=(ci*(g+ci)-1.0)/(ci*(g-ci)+1.0);
+  return 0.5*a*a*(1.0+b*b);
+}
+// Sun irradiance on a plane facing the beam, in scene units. The floor is diffuse: L = albedo E_floor / pi = albedo FLOOR_GAIN u.a.z C (floorShade), so the
+// irradiance reaching the floor at C = 1 is pi FLOOR_GAIN u.a.z on a horizontal plane; above the water it is larger by the Fresnel loss at the surface.
+// (floorShade does not model absorption on the way down, so none is undone here: the highlight is calibrated to the floor as shaded.)
+fn sunIrr(sd:vec3f)->f32 { let sy=max(sd.y,0.3); return 3.14159265*FLOOR_GAIN*u.a.z/((1.0-fresnelDiel(sy,IOR))*sy); }
+// GGX (Trowbridge-Reitz) D x height-correlated Smith visibility x n.l for one directional light; a2 = alpha^2. Multiply by Fresnel(v.h) and the irradiance.
+fn ggxDV(n:vec3f, v:vec3f, l:vec3f, a2:f32)->f32 {
+  let nl=dot(n,l); if (nl<=0.0) { return 0.0; }
+  let nv=abs(dot(n,v))+1e-4; let h=normalize(v+l);
+  let ch=cross(n,h); let s2=dot(ch,ch);                 // 1 - (n.h)^2 without cancellation near the peak
+  let d=a2*(1.0-s2)+s2; let Dg=a2/(3.14159265*d*d);
+  let vis=0.5/(nl*sqrt(nv*nv*(1.0-a2)+a2)+nv*sqrt(nl*nl*(1.0-a2)+a2));
+  return Dg*vis*nl;
+}
+// specular anti-aliasing (Tokuyoshi & Kaplanyan 2019): the normal's variation across the pixel footprint becomes extra roughness
+// The derivatives span one pixel; with per-sample shading each shading sample covers 1/SHADE_SPP of it, so the variance shrinks by the same factor.
+fn aaAlpha2(n:vec3f)->f32 { let dx=dpdx(n); let dy=dpdy(n); return min(2.0*0.15915494*(dot(dx,dx)+dot(dy,dy))/SHADE_SPP, 0.18); }
 // soft bar light in the key tangent plane: gaussian across, smooth taper + brightness gradient along (bar = centre.xy, half length, axis)
 fn softBar(q:vec2f, bar:vec4f)->f32 {
   var d = q - bar.xy; if (bar.w > 0.5) { d = d.yx; }
@@ -193,7 +215,8 @@ fn waterTintAt(depthFrac:f32)->vec3f { return SCATTER_COL * (0.35 + 0.7*u.b.x) *
 `;
 
 export const SCENE_WGSL = COMMON + /* wgsl */`
-struct FS { @builtin(position) pos:vec4f, @location(0) w:vec3f, @location(1) uv:vec2f, @location(2) lc:vec3f }
+// 'sample' interpolation: every fragment shader using FS runs once per MSAA sample (4x supersampled shading, not just 4x edges)
+struct FS { @builtin(position) pos:vec4f, @location(0) @interpolate(perspective, sample) w:vec3f, @location(1) @interpolate(perspective, sample) uv:vec2f, @location(2) @interpolate(perspective, sample) lc:vec3f }
 
 // ---------- water surface (displaced grid) ----------
 @vertex fn vsWater(@builtin(vertex_index) vi:u32) -> FS {
@@ -212,13 +235,14 @@ struct FS { @builtin(position) pos:vec4f, @location(0) w:vec3f, @location(1) uv:
   if (u.m.y>0.5) { let fo=select(-fnr,fnr,fnr.y>0.0); let fy=max(abs(fo.y),1e-9); gx=-fo.x/fy; gz=-fo.z/fy; }
   let n=normalize(vec3f(-gx*VIEW_SLOPE, 1.0, -gz*VIEW_SLOPE));    // refraction normal
   let nr=normalize(vec3f(-gx*REFL_SLOPE, 1.0, -gz*REFL_SLOPE));   // reflection normal
+  let aa2=aaAlpha2(nr);   // (derivatives must be taken before the branch below)
   let P=vec3f(clamp(i.w.xz,vec2f(-0.5),vec2f(0.5)),i.w.y).xzy; let rd=normalize(P-u.eye.xyz);   // clamp: MSAA evaluates at the pixel centre, which can extrapolate past the tank edge -> negative wall distances -> exp(+ABSORB*..) fireflies
   let cosi=-dot(rd,n);
   if (cosi < 0.0) { // seen from below (through the side glass): TIR mirror of the lit floor / inner walls + Snell's window to the room above
     let nb=-nr; let ci=clamp(dot(rd,nr),0.0,1.0);   // cos of incidence (water side)
     let st2=IOR*IOR*(1.0-ci*ci);                      // sin^2 of the transmitted angle
     var Fu=1.0; var trans=vec3f(0.0);
-    if (st2<1.0) { let ct=sqrt(1.0-st2); Fu=F0_WATER+(1.0-F0_WATER)*pow(1.0-ct,5.0); trans=env(refract(rd,nb,IOR),1.0)*(1.0-Fu); }
+    if (st2<1.0) { let ct=sqrt(1.0-st2); Fu=fresnelDiel(ci,1.0/IOR); trans=env(refract(rd,nb,IOR),1.0)*(1.0-Fu); }
     let rf=reflect(rd,nb);   // goes back down into the water
     var mir=vec3f(0.0);
     let tf=min(-D-P.y,0.0)/min(rf.y,-1e-3); let Fh=P+rf*tf;
@@ -235,7 +259,8 @@ struct FS { @builtin(position) pos:vec4f, @location(0) w:vec3f, @location(1) uv:
     let col=(mir*Fu+trans)*exp(-ABSORB*tb)*UNDER_GAIN;
     return vec4f(col,1.0);
   }
-  let F=F0_WATER+(1.0-F0_WATER)*pow(1.0-clamp(-dot(rd,nr),0.0,1.0),5.0);
+  let F=fresnelDiel(clamp(-dot(rd,nr),0.0,1.0),IOR);
+  let a2=WATER_ROUGH*WATER_ROUGH+SUN_ALPHA*SUN_ALPHA+aa2;   // GGX alpha^2: sub-grid ripples + sun disc + pixel footprint
   let r=refract(rd,n,1.0/IOR);
   var col=vec3f(0.0);
   let t=min(-D-P.y,0.0)/min(r.y,-1e-3);   // min: a disturb trough can dip below the floor plane -> t<0 -> negative col (and refl / (1 + k*lum) -> 1/0 fireflies)
@@ -255,11 +280,14 @@ struct FS { @builtin(position) pos:vec4f, @location(0) w:vec3f, @location(1) uv:
   }
   let rr=reflect(rd,nr);
   let t1=normalize(cross(rr,select(vec3f(0.0,1.0,0.0),vec3f(1.0,0.0,0.0),abs(rr.y)>0.9))); let t2=cross(rr,t1);
-  var refl=env(rr,1.0)*0.4+(env(normalize(rr+t1*REFL_ROUGH),1.0)+env(normalize(rr-t1*REFL_ROUGH),1.0)+env(normalize(rr+t2*REFL_ROUGH),1.0)+env(normalize(rr-t2*REFL_ROUGH),1.0))*0.15;
+  let rb=2.0*sqrt(a2);   // environment blur: 4 extra taps at the lobe width (the reflected ray turns by twice the normal's tilt)
+  var refl=env(rr,1.0)*0.4+(env(normalize(rr+t1*rb),1.0)+env(normalize(rr-t1*rb),1.0)+env(normalize(rr+t2*rb),1.0)+env(normalize(rr-t2*rb),1.0))*0.15;
   refl*=1.0/(1.0+REFL_OVER_FLOOR*max(dot(col,vec3f(0.2126,0.7152,0.0722)),0.0));
   let sd=normalize(u.sun.xyz);
-  refl+=SUN_INT*pow(max(dot(rr,sd),0.0),SUN_POW)*LIGHT_COL;
-  let outv=col*(1.0-F)+refl*F;
+  // sun highlight: GGX microfacet reflection of the same sun that casts the caustic (irradiance from sunIrr)
+  let vv=-rd; let hh=normalize(vv+sd);
+  let sun=min(fresnelDiel(clamp(dot(vv,hh),0.0,1.0),IOR)*ggxDV(nr,vv,sd,a2)*sunIrr(sd), SPEC_MAX)*LIGHT_COL;
+  let outv=col*(1.0-F)+refl*F+sun;
   return vec4f(outv,1.0);
 }
 
@@ -417,7 +445,8 @@ fn edgeLum(c:vec3f)->f32 { let l=dot(c,vec3f(0.3,0.55,0.15))*EDGE_LIT_REF; retur
   let pipe=EDGE_COL*(glow*(0.3+0.7*cosv)*(1.0-F)+EDGE_MIN*(1.0-cosv));   // brightest looking straight into the edge; EDGE_MIN only at grazing (the top rim at low pitch never goes black), not a fill
   let rr=reflect(rd,n);
   let refl=env(rr,GLASS_TOP)*F*mix(vec3f(1.0),EDGE_COL*1.25,0.4);
-  let spec=EDGE_SPEC*pow(max(dot(rr,normalize(u.sun.xyz)),0.0),60.0)*mix(LIGHT_COL,EDGE_COL,0.5);
+  let ev=-rd; let eh=normalize(ev+sl);   // key-light glint on the polished edge faces: same GGX model, glass F0 0.04
+  let spec=min((0.04+0.96*pow(1.0-clamp(dot(ev,eh),0.0,1.0),5.0))*ggxDV(n,ev,sl,EDGE_ROUGH*EDGE_ROUGH)*sunIrr(sl), SPEC_MAX)*mix(LIGHT_COL,EDGE_COL,0.5);
   let col=EDGE_COL*0.003+pipe+refl+spec;
   return vec4f(col,1.0);
 }
@@ -522,7 +551,7 @@ const GRADE_SAT : f32 = 1.15;                      // saturation boost after the
 const GRADE_MID : f32 = 1.38;                      // >1 darkens mid-tones (more contrast between dark water and bright caustics)
 const BLOOM_STR : f32 = 0.06;                      // bloom mix (the chain sums 6 levels, so ~0.36 x the knee-filtered energy is spread around)
 const DITHER    : f32 = 1.0;                       // output dither amplitude in 8-bit LSBs (triangular PDF): removes banding in the dark gradients
-@group(0) @binding(0) var hdr:texture_2d<f32>;
+@group(0) @binding(0) var hdr:texture_multisampled_2d<f32>;   // the unresolved 4x scene
 @group(0) @binding(1) var bloom:texture_2d<f32>;
 @group(0) @binding(2) var bsm:sampler;
 @vertex fn vs(@builtin(vertex_index) vi:u32) -> @builtin(position) vec4f {
@@ -532,7 +561,13 @@ const DITHER    : f32 = 1.0;                       // output dither amplitude in
 fn aces(x:vec3f)->vec3f { return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14), vec3f(0.0), vec3f(1.0)); }
 fn toneMapped(fp:vec4f)->vec3f {
   let uv = fp.xy/vec2f(textureDimensions(hdr));
-  let lin = max(textureLoad(hdr, vec2i(fp.xy), 0).rgb, vec3f(0.0)) + BLOOM_STR*textureSampleLevel(bloom, bsm, uv, 0.0).rgb;
+  // tone-weighted resolve: averaging the samples in linear HDR leaves stair-steps wherever one sample is far brighter than its neighbours
+  // (a 100:0 edge resolves to 25, which still clips); weighting by 1/(1 + exposed luma) averages them in a display-like space instead.
+  // Bloom still comes from the plain linear resolve, so the energy of small highlights is kept there.
+  var acc = vec3f(0.0); var wsum = 0.0;
+  let ns = i32(textureNumSamples(hdr));
+  for (var k = 0; k < ns; k++) { let c = max(textureLoad(hdr, vec2i(fp.xy), k).rgb, vec3f(0.0)); let w = 1.0/(1.0 + EXPOSURE*dot(c, vec3f(0.2126, 0.7152, 0.0722))); acc += c*w; wsum += w; }
+  let lin = acc/wsum + BLOOM_STR*textureSampleLevel(bloom, bsm, uv, 0.0).rgb;
   var c = aces(lin*EXPOSURE*GRADE_TINT);
   let l = dot(c, vec3f(0.2126, 0.7152, 0.0722));
   c = clamp(mix(vec3f(l), c, GRADE_SAT), vec3f(0.0), vec3f(1.0));
