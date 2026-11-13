@@ -4,9 +4,9 @@ const RAD = Math.PI / 180;
 const RESOLVE_MIN_INTERVAL_MS = 120, RESOLVE_BUSY_RETRY_MS = 40;
 const HUD_BAR_LEN = 30;
 // controls that change the designed surface h* (re-solved live while dragging)
-const RESOLVE_IDS = ['D', 'contrast', 'iters', 'rblur', 'subray', 'elev', 'az', 'center', 'wrap', 'cast', 'fit'];
+const RESOLVE_IDS = ['D', 'contrast', 'iters', 'rblur', 'elev', 'az', 'center', 'wrap', 'cast', 'fit'];
 // range controls whose value is echoed in the span id + 'v'
-const VALUE_LABEL_IDS = ['c', 'kappa', 'gamma', 'nu', 's', 'sub', 'amp', 'kmax', 'seed', 'hold', 'thr', 'ramp', 'glow', 'D', 'contrast', 'iters', 'expo', 'relief', 'rgain', 'rsig', 'rsteps', 'rg', 'rnoise', 'nz', 'elev', 'az', 'cast', 'rblur', 'subray', 'kick', 'ascale', 'aspeed', 'ambient', 'ospeed', 'tgy'];
+const VALUE_LABEL_IDS = ['c', 'kappa', 'gamma', 'nu', 's', 'sub', 'amp', 'kmax', 'seed', 'hold', 'thr', 'ramp', 'glow', 'D', 'contrast', 'iters', 'expo', 'relief', 'rgain', 'rsig', 'rsteps', 'rg', 'rnoise', 'nz', 'elev', 'az', 'cast', 'rblur', 'kick', 'ascale', 'aspeed', 'ambient', 'ospeed', 'tgy'];
 
 export function initUI({ $, rd, qp, R, clock, app, solveStar, setN, initSim, nextLetter, disturb, curLetter }) {
   const { clk, clockOn, clockKey, shownStr } = clock;

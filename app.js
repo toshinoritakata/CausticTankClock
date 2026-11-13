@@ -35,7 +35,7 @@ async function main() {
   app = window.tank = { device, lastError: null, fps: 0, frames: 0 };   // debug API (tank.cam, tank.preset, tank.state, ...)
   const rd = id => +$(id).value;
 
-  const renderer = await gpu.createRenderer({ device, gctx, fmt, canvas, qp, SCENE_WGSL: renderMod.SCENE_WGSL, BG_WGSL: renderMod.BG_WGSL, FINAL_WGSL: renderMod.FINAL_WGSL });
+  const renderer = await gpu.createRenderer({ device, gctx, fmt, canvas, qp, SCENE_WGSL: renderMod.SCENE_WGSL, BG_WGSL: renderMod.BG_WGSL, FINAL_WGSL: renderMod.FINAL_WGSL, BLOOM_WGSL: renderMod.BLOOM_WGSL });
   const { fitCanvas, size } = renderer;
   const { makeCtx, ensureVol: ensureVolFor } = gpu.createContexts({ device, shaders: { computeWGSL: solverMod.computeWGSL, RELAX_WGSL: relaxMod.RELAX_WGSL, godWGSL: godMod.godWGSL }, renderer });
   const ensureVol = c => ensureVolFor(c, +$('volres').value, rd('nz'));
@@ -59,7 +59,8 @@ async function main() {
   const writeDyn = (c, P, h, t) => device.queue.writeBuffer(c.rU, 0, new Float32Array([h, P.c2, dyn.kappaEff(P, t, rd('ramp')), P.gamma, P.nu, P.s, c.N * c.N, 0]));
 
   // ---------- solver (h*) ----------
-  const paramsFinal = () => ({ D: rd('D'), contrast: rd('contrast'), preblur: PRE_FINAL * S.N / 512, blur: 2 * rd('rblur') * S.N / 512, iters: rd('iters'), beta: SOLVER_BETA, sub: rd('subray'), morph: 0, el: rd('elev'), az: rd('az'), center: $('center').checked, wrap: $('wrap').checked, cast: rd('cast'), fit: $('fit').checked });
+  // sub: rays per texel of the pre-oblique solver_old splat (debug regression only); the live splat is one ray per texel with a Jacobian-sized footprint
+  const paramsFinal = () => ({ D: rd('D'), contrast: rd('contrast'), preblur: PRE_FINAL * S.N / 512, blur: 2 * rd('rblur') * S.N / 512, iters: rd('iters'), beta: SOLVER_BETA, sub: 1, morph: 0, el: rd('elev'), az: rd('az'), center: $('center').checked, wrap: $('wrap').checked, cast: rd('cast'), fit: $('fit').checked });
   function writeParams(c, p) {
     const k = p.D * (1 - 1 / NW), nn = c.N * c.N;
     const L = lightParams(p.el, p.az, p.D, p.center, p.wrap); S.L = L;

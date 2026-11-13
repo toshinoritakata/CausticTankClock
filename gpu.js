@@ -4,6 +4,7 @@
 export const ST = GPUBufferUsage.STORAGE, CS = GPUBufferUsage.COPY_SRC, CD = GPUBufferUsage.COPY_DST, UN = GPUBufferUsage.UNIFORM;
 const SAMPLES = 4;                  // MSAA
 const HDR = 'rgba16float';          // linear scene radiance; tone-mapped once in the final pass
+const BLOOM_LEVELS = 6;             // bloom mip chain: 1/2 .. 1/64 of the canvas (BLOOM_WGSL in render.js)
 const WGSL_COMPUTE = GPUShaderStage.COMPUTE;
 
 export async function initDevice(canvas, onError) {
@@ -35,8 +36,8 @@ export async function readBuffer(device, buf, size) {
 
 // ---------- render pipelines + MSAA/depth/HDR targets ----------
 const fs_name = f => f.endsWith('-srgb') ? 'fsSrgb' : 'fs';   // *-srgb swapchain: hardware applies the OETF, so skip the manual gamma
-export async function createRenderer({ device, gctx, fmt, canvas, qp, SCENE_WGSL, BG_WGSL, FINAL_WGSL }) {
-  const sceneMod = await compileWGSL(device, SCENE_WGSL, 'scene'), bgMod = await compileWGSL(device, BG_WGSL, 'bg'), finMod = await compileWGSL(device, FINAL_WGSL, 'final');
+export async function createRenderer({ device, gctx, fmt, canvas, qp, SCENE_WGSL, BG_WGSL, FINAL_WGSL, BLOOM_WGSL }) {
+  const sceneMod = await compileWGSL(device, SCENE_WGSL, 'scene'), bgMod = await compileWGSL(device, BG_WGSL, 'bg'), finMod = await compileWGSL(device, FINAL_WGSL, 'final'), blMod = await compileWGSL(device, BLOOM_WGSL, 'bloom');
   const VF = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT;
   const bgl = device.createBindGroupLayout({ entries: [
     { binding: 0, visibility: VF, buffer: { type: 'uniform' } },
@@ -56,16 +57,25 @@ export async function createRenderer({ device, gctx, fmt, canvas, qp, SCENE_WGSL
   const RP = {
     bg: mkRP(bgMod, 'vs', 'fs', { dw: false, cmp: 'always' }),
     table: mkRP(sceneMod, 'vsTable', 'fsTable'), floor: mkRP(sceneMod, 'vsFloor', 'fsFloor'),
-    water: mkRP(sceneMod, 'vsWater', 'fsWater', { blend }), glass: mkRP(sceneMod, 'vsGlass', 'fsGlass', { blend, dw: false }),
+    water: mkRP(sceneMod, 'vsWater', 'fsWater', { blend }), glass: mkRP(sceneMod, 'vsGlass', 'fsGlass', { blend, dw: false }), rim: mkRP(sceneMod, 'vsRim', 'fsRim'),
   };
-  const fbgl = device.createBindGroupLayout({ entries: [{ binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'unfilterable-float' } }] });
+  const FR = GPUShaderStage.FRAGMENT, lsamp = device.createSampler({ magFilter: 'linear', minFilter: 'linear', addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge' });
+  const fbgl = device.createBindGroupLayout({ entries: [{ binding: 0, visibility: FR, texture: { sampleType: 'unfilterable-float' } },
+    { binding: 1, visibility: FR, texture: { sampleType: 'float' } }, { binding: 2, visibility: FR, sampler: { type: 'filtering' } }] });
+  // bloom: down passes write level i from level i-1 (level -1 = hdrTex), up passes add level i+1 onto level i
+  const blgl = device.createBindGroupLayout({ entries: [{ binding: 0, visibility: FR, texture: { sampleType: 'float' } }, { binding: 1, visibility: FR, sampler: { type: 'filtering' } }] });
+  const blLay = device.createPipelineLayout({ bindGroupLayouts: [blgl] });
+  const mkBl = (fs, blend) => device.createRenderPipeline({ layout: blLay, vertex: { module: blMod, entryPoint: 'vs' },
+    fragment: { module: blMod, entryPoint: fs, targets: [{ format: HDR, blend }] }, primitive: { topology: 'triangle-list' } });
+  const add = { color: { srcFactor: 'one', dstFactor: 'one' }, alpha: { srcFactor: 'one', dstFactor: 'one' } };
+  const BP = { downFirst: mkBl('fsDownFirst'), down: mkBl('fsDown'), up: mkBl('fsUp', add) };
   const finalPipe = device.createRenderPipeline({
     layout: device.createPipelineLayout({ bindGroupLayouts: [fbgl] }), vertex: { module: finMod, entryPoint: 'vs' },
     fragment: { module: finMod, entryPoint: fs_name(fmt), targets: [{ format: fmt }] }, primitive: { topology: 'triangle-list' },
   });
   const ubuf = device.createBuffer({ size: 256 + 96, usage: UN | CD });   // view/light/look uniforms (written by app.js writeUniforms)
   const size = { w: 0, h: 0 };
-  let msaaTex = null, depthTex = null, hdrTex = null, finalBG = null;
+  let msaaTex = null, depthTex = null, hdrTex = null, finalBG = null, blTex = [], blDownBG = [], blUpBG = [];
   // resize the canvas + render targets to the element size (?w= / ?h= force a fixed size)
   function fitCanvas() {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -73,10 +83,13 @@ export async function createRenderer({ device, gctx, fmt, canvas, qp, SCENE_WGSL
     const w = fw || Math.max(64, Math.round(canvas.clientWidth * dpr)), h = fh || Math.max(64, Math.round(canvas.clientHeight * dpr));
     if (canvas.width !== w || canvas.height !== h || !msaaTex) {
       canvas.width = w; canvas.height = h; size.w = w; size.h = h;
-      msaaTex?.destroy(); depthTex?.destroy(); hdrTex?.destroy();
+      msaaTex?.destroy(); depthTex?.destroy(); hdrTex?.destroy(); for (const t of blTex) t.destroy();
       msaaTex = device.createTexture({ size: [w, h], sampleCount: SAMPLES, format: HDR, usage: GPUTextureUsage.RENDER_ATTACHMENT });
       hdrTex = device.createTexture({ size: [w, h], format: HDR, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
-      finalBG = device.createBindGroup({ layout: fbgl, entries: [{ binding: 0, resource: hdrTex.createView() }] });
+      blTex = []; for (let i = 0; i < BLOOM_LEVELS; i++) blTex.push(device.createTexture({ size: [Math.max(1, w >> (i + 1)), Math.max(1, h >> (i + 1))], format: HDR, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING }));
+      const blBG = t => device.createBindGroup({ layout: blgl, entries: [{ binding: 0, resource: t.createView() }, { binding: 1, resource: lsamp }] });
+      blDownBG = blTex.map((_, i) => blBG(i ? blTex[i - 1] : hdrTex)); blUpBG = blTex.map((_, i) => i + 1 < BLOOM_LEVELS ? blBG(blTex[i + 1]) : null);
+      finalBG = device.createBindGroup({ layout: fbgl, entries: [{ binding: 0, resource: hdrTex.createView() }, { binding: 1, resource: blTex[0].createView() }, { binding: 2, resource: lsamp }] });
       depthTex = device.createTexture({ size: [w, h], sampleCount: SAMPLES, format: 'depth24plus', usage: GPUTextureUsage.RENDER_ATTACHMENT });
     }
   }
@@ -88,7 +101,13 @@ export async function createRenderer({ device, gctx, fmt, canvas, qp, SCENE_WGSL
     });
     rp.setBindGroup(0, c.renderBG);
     rp.setPipeline(RP.bg); rp.draw(3); rp.setPipeline(RP.table); rp.draw(6); rp.setPipeline(RP.floor); rp.draw(6);
-    rp.setPipeline(RP.water); rp.draw((meshVerts - 1) * (meshVerts - 1) * 6); rp.setPipeline(RP.glass); rp.draw(6, 4); rp.end();
+    rp.setPipeline(RP.water); rp.draw((meshVerts - 1) * (meshVerts - 1) * 6); rp.setPipeline(RP.rim); rp.draw(24, 5); rp.setPipeline(RP.glass); rp.draw(6, 4); rp.end();
+    const blPass = (i, pipe, bg, load) => {
+      const p = enc.beginRenderPass({ colorAttachments: [{ view: blTex[i].createView(), loadOp: load ? 'load' : 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }] });
+      p.setPipeline(pipe); p.setBindGroup(0, bg); p.draw(3); p.end();
+    };
+    for (let i = 0; i < BLOOM_LEVELS; i++) blPass(i, i ? BP.down : BP.downFirst, blDownBG[i], false);
+    for (let i = BLOOM_LEVELS - 2; i >= 0; i--) blPass(i, BP.up, blUpBG[i], true);
     const fp = enc.beginRenderPass({ colorAttachments: [{ view: gctx.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }] });
     fp.setPipeline(finalPipe); fp.setBindGroup(0, finalBG); fp.draw(3); fp.end();
   }

@@ -1,4 +1,4 @@
-// Copied verbatim from ../caustics_gpu/app.js (compute solver WGSL: FFT Poisson / Monge-Ampere / forward splat).
+// Copied verbatim from ../caustics_gpu/app.js (compute solver WGSL: FFT Poisson / Monge-Ampere / forward splat); local change: the forward splat uses Jacobian-sized footprints (FOOT_*).
 export const SCALE = 65536;
 export function computeWGSL(N) {
   const bilFn = (name, buf) => `fn ${name}(x:i32,y:i32,ax:f32,ay:f32)->f32{
@@ -143,9 +143,6 @@ var<workgroup> red: array<f32, 256>;
   let i = g.y * N + g.x; Tb[i] = Tb[i] / stats[1];
 }
 ${bilFn('bilT', 'Tb')}
-${bilFn('bilHx', 'hxb')}
-${bilFn('bilHy', 'hyb')}
-${bilFn('bilH', 'field')}
 @compute @workgroup_size(8,8) fn initT(@builtin(global_invocation_id) g:vec3u) {
   let i = g.y * N + g.x;
   let fx = f32(g.x) + f32(N) * prm.shx; let fy = f32(g.y) + f32(N) * prm.shy;
@@ -185,33 +182,56 @@ fn fadeMask(fx:f32, fy:f32)->f32 {
   let px = fx / f32(N); let py = fy / f32(N); let f = prm.fadeW;
   return smoothstep(0.0, f, px) * smoothstep(0.0, f, 1.0 - px) * smoothstep(0.0, f, py) * smoothstep(0.0, f, 1.0 - py);
 }
-fn splat1(fx:f32, fy:f32, w:f32) {
-  if (!(abs(fx) < 1.0e6 && abs(fy) < 1.0e6)) { return; }
-  let fx0 = floor(fx); let fy0 = floor(fy); let ax = fx - fx0; let ay = fy - fy0;
-  let X0 = i32(fx0) & (NI - 1); let X1 = (X0 + 1) & (NI - 1); let Y0 = i32(fy0) & (NI - 1); let Y1 = (Y0 + 1) & (NI - 1);
-  let s = w * SCALE;
-  atomicAdd(&accum[u32(Y0 * NI + X0)], u32(s * (1.0 - ax) * (1.0 - ay) + 0.5));
-  atomicAdd(&accum[u32(Y0 * NI + X1)], u32(s * ax * (1.0 - ay) + 0.5));
-  atomicAdd(&accum[u32(Y1 * NI + X0)], u32(s * (1.0 - ax) * ay + 0.5));
-  atomicAdd(&accum[u32(Y1 * NI + X1)], u32(s * ax * ay + 0.5));
+// CausticTankClock: footprint splat. Rays stay on the regular texel grid (no jitter); each ray deposits an anisotropic gaussian sized by the
+// local landing Jacobian J (columns = landing spacing of the x / y neighbours): per principal axis sd = max(FOOT_MIN, FOOT_SPREAD x spacing), normalised per ray.
+// Where light spreads, footprints overlap their neighbours -> a continuous field instead of a dot lattice; where it focuses (digits), the
+// footprint shrinks to FOOT_MIN ~ the old bilinear tent (sd 0.41), so edges keep their sharpness. Folds need no area division: no fireflies.
+const FOOT_SPREAD: f32 = 0.6;   // gaussian sd in units of the local ray spacing (0.6: ripple of a regular grid ~0.2%)
+const FOOT_MIN: f32 = 0.4;      // minimum sd (texels), used wherever light is focused: ~ the old bilinear tent (sd 0.41)
+const FOOT_RMAX: i32 = 8;       // footprint half-extent cap (texels): bounds the cost at strongly diverging rays (truncated, still normalised)
+// landing displacement (texels) of the ray leaving texel (x,y) (any integer, wrapped): exact vector Snell, oblique collimated light, floor at depth D
+fn landD(x:i32, y:i32)->vec2f {
+  let i = u32((y & (NI - 1)) * NI + (x & (NI - 1)));
+  let gx = hxb[i]; let gy = hyb[i]; let hh = field[i]; let eta = 1.0 / prm.nw;
+  let inv = 1.0 / sqrt(1.0 + gx*gx + gy*gy);
+  let n = vec3f(-gx * inv, -gy * inv, inv);
+  let di = vec3f(prm.dix, prm.diy, prm.diz);
+  let c = -dot(di, n); let kk = 1.0 - eta*eta*(1.0 - c*c);
+  let f = eta * c - sqrt(kk);
+  let t = eta * di + f * n;
+  let len = (prm.D + hh) / (-t.z);
+  return vec2f(len * t.x, len * t.y) * f32(N);
 }
-// forward caustic: refract oblique collimated rays (exact vector Snell) through the surface (n=nw) to floor depth D, bilinear atomic splat
+// forward caustic: one ray per texel refracted to the floor, deposited with its Jacobian-sized gaussian footprint (periodic target, fadeMask at the landing point)
 @compute @workgroup_size(8,8) fn splat(@builtin(global_invocation_id) g:vec3u) {
   let x = i32(g.x); let y = i32(g.y);
-  let sub = i32(prm.sub); let w = 1.0 / f32(sub * sub); let eta = 1.0 / prm.nw;
-  let cen = f32(sub - 1) / (2.0 * f32(sub));
-  for (var sy = 0; sy < sub; sy++) { for (var sx = 0; sx < sub; sx++) {
-    let ox = f32(sx) / f32(sub); let oy = f32(sy) / f32(sub);
-    let gx = bilHx(x, y, ox, oy); let gy = bilHy(x, y, ox, oy); let hh = bilH(x, y, ox, oy);
-    let inv = 1.0 / sqrt(1.0 + gx*gx + gy*gy);
-    let n = vec3f(-gx * inv, -gy * inv, inv);
-    let di = vec3f(prm.dix, prm.diy, prm.diz);
-    let c = -dot(di, n); let kk = 1.0 - eta*eta*(1.0 - c*c);
-    let f = eta * c - sqrt(kk);
-    let t = eta * di + f * n;
-    let len = (prm.D + hh) / (-t.z);
-    let fx = f32(x) + ox - cen + len * t.x * f32(N); let fy = f32(y) + oy - cen + len * t.y * f32(N);
-    splat1(fx, fy, w * fadeMask(fx, fy));
+  let p = vec2f(f32(x), f32(y)) + landD(x, y);
+  let w = fadeMask(p.x, p.y);
+  if (!(abs(p.x) < 1.0e6 && abs(p.y) < 1.0e6) || w <= 0.0) { return; }
+  let a = vec2f(1.0, 0.0) + (landD(x + 1, y) - landD(x - 1, y)) * 0.5;   // d(landing)/dx
+  let b = vec2f(0.0, 1.0) + (landD(x, y + 1) - landD(x, y - 1)) * 0.5;   // d(landing)/dy
+  // per principal direction of J J^T: sd = max(FOOT_MIN, FOOT_SPREAD * spacing) -> only spreading directions widen, focused ones stay FOOT_MIN
+  let axx = a.x*a.x + b.x*b.x; let ayy = a.y*a.y + b.y*b.y; let axy = a.x*a.y + b.x*b.y;
+  let hd = sqrt(0.25*(axx - ayy)*(axx - ayy) + axy*axy); let l1 = 0.5*(axx + ayy) + hd; let l2 = max(0.5*(axx + ayy) - hd, 0.0);
+  var v1 = select(vec2f(0.0, 1.0), vec2f(1.0, 0.0), axx >= ayy);
+  if (abs(axy) > 1e-9) { v1 = normalize(vec2f(axy, l1 - axx)); }
+  let s2 = FOOT_SPREAD * FOOT_SPREAD; let m2 = FOOT_MIN * FOOT_MIN;
+  let q1 = max(m2, s2 * l1); let q2 = max(m2, s2 * l2);
+  let cxx = q1*v1.x*v1.x + q2*v1.y*v1.y; let cyy = q1*v1.y*v1.y + q2*v1.x*v1.x; let cxy = (q1 - q2)*v1.x*v1.y;
+  let det = cxx * cyy - cxy * cxy;
+  let ixx = cyy / det; let iyy = cxx / det; let ixy = -cxy / det;
+  let rx = min(i32(ceil(2.5 * sqrt(cxx))), FOOT_RMAX); let ry = min(i32(ceil(2.5 * sqrt(cyy))), FOOT_RMAX);
+  let X0 = i32(floor(p.x)); let Y0 = i32(floor(p.y));
+  var sum = 0.0;
+  for (var j = -ry; j <= ry + 1; j++) { for (var i = -rx; i <= rx + 1; i++) {
+    let d = vec2f(f32(X0 + i), f32(Y0 + j)) - p;
+    sum += exp(-0.5 * (ixx*d.x*d.x + 2.0*ixy*d.x*d.y + iyy*d.y*d.y));
+  } }
+  let s = w * SCALE / max(sum, 1e-20);
+  for (var j = -ry; j <= ry + 1; j++) { for (var i = -rx; i <= rx + 1; i++) {
+    let d = vec2f(f32(X0 + i), f32(Y0 + j)) - p;
+    let v = s * exp(-0.5 * (ixx*d.x*d.x + 2.0*ixy*d.x*d.y + iyy*d.y*d.y));
+    if (v >= 0.5) { atomicAdd(&accum[u32(((Y0 + j) & (NI - 1)) * NI + ((X0 + i) & (NI - 1)))], u32(v + 0.5)); }
   } }
 }
 `;
