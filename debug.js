@@ -10,7 +10,7 @@ const relRms = (a, b) => { let ma = 0, mb = 0; const n = a.length; for (let i = 
 export function installDebug(K) {
   const { device, $, rd, app, S, R, clock, cpuMod, lightParams, rb, CD, fitCanvas, size, makeCtx, ensureVol, writeGod, encodeForward, encodeRender, writeUniforms,
     dynP, planSteps, dtSafe, writeDyn, readStats, solveStar, nextLetter, disturb, initSim, setN, setPlay, curLetter, uploadGlyph, paramsFinal, writeParams, amb } = K;
-  const { clk, clockOn, showSec, shownStr } = clock;
+  const { clk, clockOn, shownStr } = clock;
   const { encodeSolve, encodeSteps, encodeCaustic, encodeVolume } = K.passes;
   const MAP_READ = GPUBufferUsage.MAP_READ;
 
@@ -136,6 +136,6 @@ export function installDebug(K) {
   window.clock = {
     setTime: s => { const m = /^(\d{1,2}):?(\d{2})(?::?(\d{2}))?$/.exec(s); if (!m) throw new Error('HH:MM[:SS]'); const d = new Date(); d.setHours(+m[1], +m[2], +(m[3] || 0), 0); clk.off = d.getTime() - Date.now(); return shownStr(); },
     advance: min => { clk.off += min * 60000; return shownStr(); },
-    state: () => ({ on: clockOn(), time: shownStr(), key: clk.key, ticks: clk.ticks, offsetMs: clk.off, layout: $('clockLayout').value, sec: showSec(), h12: $('clock12').value, N: S.N, resid: R.resid, nan: R.nan, fps: app.fps }),
+    state: () => ({ on: clockOn(), time: shownStr(), key: clk.key, ticks: clk.ticks, offsetMs: clk.off, layout: $('clockLayout').value, h12: $('clock12').value, N: S.N, resid: R.resid, nan: R.nan, fps: app.fps }),
   };
 }

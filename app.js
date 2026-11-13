@@ -6,11 +6,12 @@
 // This file is the orchestrator. Modules (all leaf modules, loaded below with this file's ?v= cache-busting query, so none can be stale-cached):
 //   gpu.js (device, pipelines, buffers)  passes.js (compute encoders)  glyph.js (letter / clock texture)  clock.js (time + glyph key)
 //   dynamics.js (stability, ambient forcing)  camera.js  ui.js (panel, keys, HUD)  params.js (localStorage)  debug.js (window.relax / window.clock)
-const $ = id => document.getElementById(id);
+//   panel.js (element lookup that survives a stale index.html)
 const V = new URL(import.meta.url).searchParams.get('v') || Date.now();
 const load = name => import(`./${name}.js?v=${V}`);
-const [solverMod, renderMod, relaxMod, godMod, obliqueMod, cpuMod, gpu, passes, glyph, clockMod, dyn, cameraMod, uiMod, paramsMod, debugMod] =
-  await Promise.all(['solver', 'render', 'relax', 'godrays', 'oblique', 'cpu', 'gpu', 'passes', 'glyph', 'clock', 'dynamics', 'camera', 'ui', 'params', 'debug'].map(load));
+const [solverMod, renderMod, relaxMod, godMod, obliqueMod, cpuMod, gpu, passes, glyph, clockMod, dyn, cameraMod, uiMod, paramsMod, debugMod, panelMod] =
+  await Promise.all(['solver', 'render', 'relax', 'godrays', 'oblique', 'cpu', 'gpu', 'passes', 'glyph', 'clock', 'dynamics', 'camera', 'ui', 'params', 'debug', 'panel'].map(load));
+const $ = panelMod.makeLookup();   // missing panel elements -> default-valued stand-ins (one warning each), never a crash
 const { lightParams, NW } = obliqueMod;
 const { genIC, mulberry32 } = relaxMod;
 const { encodeSolve, encodeSteps, encodeCaustic, encodeVolume, submitKick } = passes;
@@ -32,16 +33,19 @@ const STATS_EVERY_FRAMES = 6;     // GPU stats readback interval
 const BLOWUP_RESID = 50;          // residual |e|/|h*| above which the sim is re-initialised
 const FPS_PERIOD_MS = 500;
 const MAX_LETTER_S = 60;          // letter list: advance after this long even if not settled
-const KICK_RING_AMP = 4;          // clock tick ring amplitude, x rms(h*) x 'tick kick'
-const KICK_SECONDS_SCALE = 0.35;  // ... scaled down when seconds are shown
+const KICK_RATE = 4;              // 1/s: tick kick velocity = 'tick kick' x KICK_RATE x (local part of the surface change h*_new - h*_old)
+const KICK_LOCAL_R = 0.08;        // tank widths: the surface change minus its average over this radius = the part local to the digits that changed
+const KICK_SPREAD_S = 0.5;        // s: the tick kick's impulse is delivered over this time (Hann-shaped push, same total impulse); 0 = one instant kick
 const MIN_SETTLE_S = 0.5;
+// Digit transitions (moving equilibrium, relax.js): the equilibrium surface is eased from the old h* to the new one over 'transition s'
+// (w = 1 - smoothstep(t / T)); 0 = the old instant switch.
 const DEFAULT_N = 256;
 
 async function main() {
   let app;
-  const canvas = $('view');
+  const canvas = document.getElementById('view'); if (!canvas) throw new Error('index.html has no #view canvas');
   const { device, gctx, fmt } = await gpu.initDevice(canvas, msg => { app.lastError = msg; });
-  app = window.tank = { device, lastError: null, fps: 0, frames: 0 };   // debug API (tank.cam, tank.preset, tank.state, ...)
+  app = window.tank = { device, lastError: null, fps: 0, frames: 0, checkPanelDefaults: () => panelMod.checkDefaults() };   // debug API (tank.cam, tank.preset, tank.state, ...)
   const rd = id => +$(id).value;
 
   const renderer = await gpu.createRenderer({ device, gctx, fmt, canvas, qp, SCENE_WGSL: renderMod.SCENE_WGSL, BG_WGSL: renderMod.BG_WGSL, FINAL_WGSL: renderMod.FINAL_WGSL, BLOOM_WGSL: renderMod.BLOOM_WGSL });
@@ -53,19 +57,26 @@ async function main() {
   // ---------- state ----------
   // S: current context / grid / light; R: simulation + relax state
   const S = { ctx: null, N: 512, paused: true, t0: performance.now() };
-  const R = { t: 0, tl: 0, idx: 0, playing: true, holdT: 0, resid: 1, e2: 0, h2: 1e-4, emax: 0, nan: 0, rmsStar: 0.01, busy: false, statBusy: false, slowed: false, nSub: 0, hSub: 0, listStr: null };
+  const R = { t: 0, tl: 0, idx: 0, playing: true, holdT: 0, resid: 1, e2: 0, h2: 1e-4, emax: 0, nan: 0, rmsStar: 0.01, busy: false, statBusy: false, slowed: false, nSub: 0, hSub: 0, listStr: null, trT: 0, trW: 0 };
   app.state = S;
   app.stretchLaw = 'sin';   // glyph cast-shadow stretch law, see glyph.js castWarp
   const clock = clockMod.createClock($);
-  const { clk, clockOn, showSec, clockKey } = clock;
+  const { clk, clockOn, clockKey } = clock;
   const letters = () => { const L = $('textList').value.split(/[,，]/).map(x => x.trim()).filter(Boolean); return L.length ? L : [' ']; };
   const curLetter = () => { if (clockOn()) { if (!clk.key) clk.key = clockKey(); return clk.key; } return letters()[R.idx % letters().length]; };
   const meshM = c => $('decouple').checked ? Math.min(c.N, Math.max(2, +$('mesh').value || c.N)) : c.N;
 
   // ---------- dynamics ----------
-  const dynP = () => dyn.dynParams(rd, S.N, clockOn() && showSec());
+  const dynP = () => dyn.dynParams(rd, S.N);
   const amb = dyn.createAmbient({ device, $, rd, mulberry32 });
-  const writeDyn = (c, P, h, t) => device.queue.writeBuffer(c.rU, 0, new Float32Array([h, P.c2, dyn.kappaEff(P, t, rd('ramp')), P.gamma, P.nu, P.s, c.N * c.N, 0]));
+  const writeDyn = (c, P, h, t) => device.queue.writeBuffer(c.rU, 0, new Float32Array([h, P.c2, dyn.kappaEff(P, t, rd('ramp')), P.gamma, P.nu, P.s, c.N * c.N, R.trW, 0, 0, 0, 0]));
+  // transition clock: w eases 1 -> 0 over the transition time (sim seconds)
+  const transT = () => rd('trans');
+  function advanceTrans(dt) {
+    if (R.trW <= 0) return; R.trT += dt; const T = transT();
+    if (!(T > 0) || R.trT >= T) { R.trW = 0; return; }
+    const q = R.trT / T; R.trW = 1 - q * q * (3 - 2 * q);
+  }
 
   // ---------- solver (h*) ----------
   // sub: rays per texel of the pre-oblique solver_old splat (debug regression only); the live splat is one ray per texel with a Jacobian-sized footprint
@@ -88,7 +99,16 @@ async function main() {
     if (retarget) enc.copyBufferToBuffer(c.B.field, 0, c.hp, 0, c.N * c.N * 4);
     const ps = enc.beginComputePass(); encodeSolve(ps, c, p);
     if (retarget) { ps.setPipeline(c.rp.retarget); ps.setBindGroup(0, c.bgP[1 - c.cur]); ps.dispatchWorkgroups(c.N / 8, c.N / 8); }
-    ps.end(); device.queue.submit([enc.finish()]);
+    ps.end();
+    if (retarget) device.queue.writeBuffer(c.rU, 28, new Float32Array([R.trW]));   // retarget folds the equilibrium still in force (w dq) into the new dq
+    device.queue.submit([enc.finish()]);
+    if (retarget) { R.trT = 0; R.trW = transT() > 0 ? 1 : 0; } else R.trW = 0;
+    // on a retarget, start the tick kick from the local part of the change: old h* (just staged in hp) vs new h*, both read back in queue order
+    const k = rd('kick'); if (!retarget || !(k > 0)) return;
+    const tok = c.starTok = (c.starTok || 0) + 1, nb = c.N * c.N * 4;
+    Promise.all([rb(c.hp, nb), rb(c.B.field, nb)]).then(([prev, cur]) => {
+      if (S.ctx === c && tok === c.starTok) R.kick = { pat: localChange(prev, cur, c.N), amp: k * KICK_RATE, t: 0 };
+    }).catch(() => {});
   }
 
   // ---------- god rays + forward pass ----------
@@ -133,23 +153,30 @@ async function main() {
     const c = S.ctx, ic = genIC(c.N, pickSeed(), rd('amp') * R.rmsStar, dynP());
     device.queue.writeBuffer(c.kV, 0, ic.v); submitKick(device, c); R.holdT = 0; R.tl = 0;
   }
-  // clock water stirring: velocity-only ring from the centre (tick) + faint random shimmer, all through the same addKick path
-  function kickBuf(c) {
-    if (c.kk) return c.kk; const N = c.N, ring = new Float32Array(N * N); let m = 0;
-    for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
-      const dx = (i + 0.5) / N - 0.5, dy = (j + 0.5) / N - 0.5, r = Math.hypot(dx, dy), q = (r - 0.13) / 0.08;
-      const v = Math.exp(-q * q) * Math.cos(2 * Math.PI * (r - 0.13) / 0.14); ring[j * N + i] = v; m += v;
-    }
-    m /= N * N; let s = 0; for (let i = 0; i < ring.length; i++) { ring[i] -= m; s += ring[i] * ring[i]; } s = Math.sqrt(s / ring.length) || 1; for (let i = 0; i < ring.length; i++) ring[i] /= s;   // zero mean, unit rms
-    return c.kk = { ring, out: new Float32Array(N * N) };
+  // tick kick: a velocity push only where the designed surface changed (the digits that were rewritten), towards the new shape, so those digits
+  // slosh while the rest of the tank is left alone. The change h*_new - h*_old has a smooth tank-wide part (the global solve); a high-pass removes it.
+  function localChange(prev, cur, N) {
+    const n = N * N, d = new Float32Array(n), a = new Float32Array(n), b = new Float32Array(n), r = Math.max(1, Math.round(KICK_LOCAL_R * N)), w = 1 / (2 * r + 1);
+    for (let i = 0; i < n; i++) a[i] = d[i] = cur[i] - prev[i];
+    const box = (src, dst, sx, sy) => { for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) { let t = 0; for (let k = -r; k <= r; k++) t += src[((j + k * sy + N) % N) * N + (i + k * sx + N) % N]; dst[j * N + i] = t * w; } };
+    box(a, b, 1, 0); box(b, a, 0, 1); box(a, b, 1, 0); box(b, a, 0, 1);   // two box passes (periodic) ~ a triangle average
+    for (let i = 0; i < n; i++) d[i] -= a[i];
+    return d;
   }
   function applyKick(c, src, amp) {
-    const o = kickBuf(c).out; for (let i = 0; i < o.length; i++) o[i] = src[i] * amp;
+    const o = c.kout || (c.kout = new Float32Array(c.N * c.N)); for (let i = 0; i < o.length; i++) o[i] = src[i] * amp;
     device.queue.writeBuffer(c.kV, 0, o); submitKick(device, c);
   }
   function clockTick() {
     const c = S.ctx; R.tl = 0; R.resid = 1; R.holdT = 0; clk.ticks++; solveStar(true);
-    const k = rd('kick') * (showSec() ? KICK_SECONDS_SCALE : 1); if (k > 0) applyKick(c, kickBuf(c).ring, k * KICK_RING_AMP * R.rmsStar);
+  }
+  // deliver the pending tick kick: the part of the total impulse that falls in this frame's simulated time
+  function pushKick(c, dt) {
+    const K = R.kick; if (!K) return;
+    const T = KICK_SPREAD_S, H = x => x <= 0 ? 0 : x >= 1 ? 1 : x - Math.sin(2 * Math.PI * x) / (2 * Math.PI);
+    const f = T > 0 ? H((K.t + dt) / T) - H(K.t / T) : 1; K.t += dt;
+    if (f > 0) applyKick(c, K.pat, K.amp * f);
+    if (!(T > 0) || K.t >= T) R.kick = null;
   }
   function nextLetter(to) {
     if (letters().length <= 1) { disturb(); return; }
@@ -198,7 +225,7 @@ async function main() {
     const old = S.ctx; S.paused = true; R.busy = true;
     let hOld = null, vOld = null, No = 0;
     if (old && old.N !== N) { No = old.N; const f = await rb(old.B.field, No * No * 4), e = await rb(old.E[old.cur], No * No * 4); vOld = await rb(old.Vb[old.cur], No * No * 4); hOld = f.map((v, i) => v + e[i]); }
-    S.ctx = await makeCtx(N); ensureVol(S.ctx); S.N = N;
+    S.ctx = await makeCtx(N); ensureVol(S.ctx); S.N = N; R.trW = 0; R.kick = null;
     if (!hOld) { await initSim(); }
     else {
       const c = S.ctx; solveStar(false); await device.queue.onSubmittedWorkDone();
@@ -239,9 +266,10 @@ async function main() {
     else if (R.listStr !== $('textList').value && !R.busy) { R.listStr = $('textList').value; nextLetter(0); }
     const enc = device.createCommandEncoder(), ps = enc.beginComputePass();
     let simDt = 0;
+    if (R.playing && !R.busy) pushKick(c, Math.min(MAX_FRAME_DT, dtR));
     if (R.playing && !R.busy) {
       const P = dynP(), pl = dyn.planSteps(dtR, P, c.N); R.slowed = pl.slowed; R.nSub = pl.n; R.hSub = pl.h;
-      writeDyn(c, P, pl.h, R.t); simDt = pl.n * pl.h; amb.update(c, simDt, P, R.rmsStar); encodeSteps(ps, c, pl.n);
+      writeDyn(c, P, pl.h, R.t); simDt = pl.n * pl.h; amb.update(c, simDt, P, R.rmsStar); encodeSteps(ps, c, pl.n); advanceTrans(simDt);
     }
     encodeForward(ps, c); ps.end();
     writeUniforms(); encodeRender(enc, c); device.queue.submit([enc.finish()]);
@@ -265,4 +293,4 @@ async function main() {
   requestAnimationFrame(frame);
   app.ready = true;
 }
-main().catch(e => { document.getElementById('fps').textContent = 'ERROR: ' + e.message; console.error(e); });
+main().catch(e => { $('fps').textContent = 'ERROR: ' + e.message; console.error(e); });

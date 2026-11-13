@@ -2,10 +2,10 @@
 // Pure canvas code; the caller (app.js uploadGlyph) copies the result to the solver's input texture.
 const RAD = Math.PI / 180;
 
-// Clock key 'CLK|layout|line1|line2|line3' (see clock.js clockKey): lines are fitted into the square and centred.
+// Clock key 'CLK|layout|line1|line2' (see clock.js clockKey): lines are fitted into the square and centred.
 function drawClockGlyph(c, key, N) {
   const parts = key.split('|'), lay = parts[1], lines = parts.slice(2), fam = '"Arial Black", "Helvetica Neue", Helvetica, sans-serif';
-  const base = lay === 'single' ? [0.5] : (lines.length === 3 ? [0.46, 0.46, 0.26] : [0.62, 0.62]);   // font size / N before fitting
+  const base = lay === 'single' ? [0.5] : [0.62, 0.62];   // font size / N before fitting
   const meas = (txt, fs) => { c.font = `900 ${fs}px ${fam}`; const m = c.measureText(txt); return { asc: c.measureText('0').actualBoundingBoxAscent, L: m.actualBoundingBoxLeft, R: m.actualBoundingBoxRight }; };
   const gap = 0.07 * N; let s = 1, tot = 0;
   const calc = () => { tot = 0; let wmax = 0; lines.forEach((t, i) => { const m = meas(t, base[i] * N * s); tot += m.asc; wmax = Math.max(wmax, m.L + m.R); }); tot += gap * (lines.length - 1); return { wmax }; };

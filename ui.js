@@ -6,7 +6,7 @@ const HUD_BAR_LEN = 30;
 // controls that change the designed surface h* (re-solved live while dragging)
 const RESOLVE_IDS = ['D', 'contrast', 'iters', 'rblur', 'disp', 'elev', 'az', 'center', 'wrap', 'cast', 'fit'];
 // range controls whose value is echoed in the span id + 'v'
-const VALUE_LABEL_IDS = ['c', 'kappa', 'gamma', 'nu', 's', 'sub', 'amp', 'kmax', 'seed', 'hold', 'thr', 'ramp', 'glow', 'D', 'contrast', 'iters', 'expo', 'relief', 'rgain', 'rsig', 'rsteps', 'rg', 'rnoise', 'nz', 'elev', 'az', 'cast', 'rblur', 'disp', 'kick', 'ascale', 'aspeed', 'ambient', 'ripple', 'rscale', 'ospeed', 'tgy'];
+const VALUE_LABEL_IDS = ['c', 'kappa', 'gamma', 'nu', 's', 'sub', 'amp', 'kmax', 'seed', 'hold', 'thr', 'ramp', 'glow', 'D', 'contrast', 'iters', 'expo', 'relief', 'rgain', 'rsig', 'rsteps', 'rg', 'rnoise', 'nz', 'elev', 'az', 'cast', 'rblur', 'disp', 'kick', 'trans', 'ascale', 'aspeed', 'ambient', 'ripple', 'rscale', 'ospeed', 'tgy'];
 
 export function initUI({ $, rd, qp, R, clock, app, solveStar, setN, initSim, nextLetter, disturb, curLetter }) {
   const { clk, clockOn, clockKey, shownStr } = clock;

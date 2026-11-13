@@ -1,13 +1,11 @@
 // Wave dynamics parameters, time-step stability and the continuous ambient forcing. rd(id) reads a UI value as a number.
 const clamp01 = x => Math.min(1, Math.max(0, x));
 const TWO_PI = 2 * Math.PI;
-const SECONDS_STIFFEN = [1.8, 1.6];   // clock shows seconds: the surface is retargeted every second, so kappa x1.8 and gamma x1.6 make it settle quickly
 const STABILITY_LIMIT = 3.2;          // 80 % of the symplectic-Euler limit (4), see dtSafe
 
 // solver/wave parameters from the UI; kmax is clipped to the grid (N/8 cycles)
-export function dynParams(rd, N, secondsShown) {
-  const q = secondsShown ? SECONDS_STIFFEN : [1, 1];
-  return { c2: rd('c') ** 2, kappa: rd('kappa') * q[0], gamma: rd('gamma') * q[1], nu: rd('nu') * 1e-5, s: rd('s') * 1e-7, kmax: Math.min(rd('kmax'), N / 8), cap: rd('sub') };
+export function dynParams(rd, N) {
+  return { c2: rd('c') ** 2, kappa: rd('kappa'), gamma: rd('gamma'), nu: rd('nu') * 1e-5, s: rd('s') * 1e-7, kmax: Math.min(rd('kmax'), N / 8), cap: rd('sub') };
 }
 
 // Symplectic Euler with explicit friction, per Fourier mode: stable iff dt^2 w^2 < 4 - 2 dt G  (w^2 = omega^2, G = gamma + nu*lambda, lambda = 8N^2 = 5-pt Laplacian max).

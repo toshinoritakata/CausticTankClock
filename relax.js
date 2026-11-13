@@ -1,27 +1,35 @@
 // Damped wave dynamics on the deviation e = h - h*  (periodic N x N grid, h = 1/N, domain = 1 x 1 tank footprint).
-//   e_tt = c^2 Lap(e) - kappa e - gamma e_t + nu Lap(e_t) - s Lap(Lap(e))
+//   e_tt = L(e - w Dq) - gamma e_t + nu Lap(e_t),   L(u) = c^2 Lap(u) - kappa u - s Lap(Lap(u))
+// Moving equilibrium (digit transitions): the only non-physical term is the restoring force towards the designed surface. On a new target the
+// surface is kept (e += h*_old - h*_new) and the equilibrium the force pulls towards is h*_new + w Dq, Dq = old equilibrium - h*_new, with w eased
+// 1 -> 0 over the transition time (app.js): the whole elastic operator L acts on the deviation from that moving equilibrium, so the force starts at
+// ~0 and moves smoothly, instead of the whole field being released at once (every scale of the digit shape included, not only the kappa part).
+// The equilibrium is always a blend of two designed surfaces, the water obeys the same wave equation throughout, and the caustic is that of the
+// real surface h* + e at every instant.
 // Scheme: semi-implicit (symplectic) Euler:  v' = v + dt*a(e, v);  e' = e + dt*v'   (ping-pong buffers, 5-pt Laplacian, 13-pt biharmonic)
 export const RELAX_WGSL = (N) => /* wgsl */`
 const N:u32=${N}u; const NI:i32=${N};
-struct P { dt:f32, c2:f32, kappa:f32, gamma:f32, nu:f32, s:f32, ih2:f32, p0:f32 }
+struct P { dt:f32, c2:f32, kappa:f32, gamma:f32, nu:f32, s:f32, ih2:f32, trw:f32, p0:f32, p1:f32, p2:f32, p3:f32 }
 @group(0) @binding(0) var<uniform> p:P;
 @group(0) @binding(1) var<storage,read> eIn:array<f32>;
 @group(0) @binding(2) var<storage,read> vIn:array<f32>;
 @group(0) @binding(3) var<storage,read_write> eOut:array<f32>;
 @group(0) @binding(4) var<storage,read_write> vOut:array<f32>;
 @group(0) @binding(5) var<storage,read> hs:array<f32>;
-@group(0) @binding(6) var<storage,read> hp:array<f32>;
+@group(0) @binding(6) var<storage,read_write> hp:array<f32>;   // [0, N*N): previous h* / kick velocity staging; [N*N, 2N*N): dq (see header)
 @group(0) @binding(7) var<storage,read_write> hT:array<f32>;
 @group(0) @binding(8) var<storage,read_write> stats:array<f32>;
 // continuous ambient forcing: 12 swell + 20 fine-ripple travelling waves, each vec4(2*pi*kx, 2*pi*ky, phase(t), amplitude); amplitude 0 = unused
 @group(0) @binding(9) var<uniform> amb:array<vec4f,32>;
 fn ix(x:i32,y:i32)->u32 { return u32(((y&(NI-1))*NI)+(x&(NI-1))); }
+// deviation from the equilibrium in force (moving during a transition)
+fn ee(i:u32)->f32 { if (p.trw==0.0) { return eIn[i]; } return eIn[i]-p.trw*hp[N*N+i]; }   // uniform branch: no extra reads outside transitions
 @compute @workgroup_size(8,8) fn step(@builtin(global_invocation_id) g:vec3u) {
   let x=i32(g.x); let y=i32(g.y); let i=ix(x,y);
-  let e0=eIn[i];
-  let en=eIn[ix(x+1,y)]+eIn[ix(x-1,y)]+eIn[ix(x,y+1)]+eIn[ix(x,y-1)];
-  let ed=eIn[ix(x+1,y+1)]+eIn[ix(x-1,y+1)]+eIn[ix(x+1,y-1)]+eIn[ix(x-1,y-1)];
-  let e2=eIn[ix(x+2,y)]+eIn[ix(x-2,y)]+eIn[ix(x,y+2)]+eIn[ix(x,y-2)];
+  let e0=ee(i);
+  let en=ee(ix(x+1,y))+ee(ix(x-1,y))+ee(ix(x,y+1))+ee(ix(x,y-1));
+  let ed=ee(ix(x+1,y+1))+ee(ix(x-1,y+1))+ee(ix(x+1,y-1))+ee(ix(x-1,y-1));
+  let e2=ee(ix(x+2,y))+ee(ix(x-2,y))+ee(ix(x,y+2))+ee(ix(x,y-2));
   let lapE=(en-4.0*e0)*p.ih2;
   let bi=(20.0*e0-8.0*en+2.0*ed+e2)*p.ih2*p.ih2;
   let v0=vIn[i];
@@ -31,11 +39,12 @@ fn ix(x:i32,y:i32)->u32 { return u32(((y&(NI-1))*NI)+(x&(NI-1))); }
   for (var m=0; m<32; m++) { let q=amb[m]; if (q.w!=0.0) { F+=q.w*cos(q.x*px+q.y*py-q.z); } }
   let a=p.c2*lapE-p.kappa*e0-p.s*bi-p.gamma*v0+p.nu*lapV+F;
   let v1=v0+p.dt*a;
-  vOut[i]=v1; eOut[i]=e0+p.dt*v1;
+  vOut[i]=v1; eOut[i]=eIn[i]+p.dt*v1;
 }
 @compute @workgroup_size(8,8) fn compose(@builtin(global_invocation_id) g:vec3u) { let i=g.y*N+g.x; hT[i]=hs[i]+eIn[i]; }
-// new target: keep the surface, e += h*_old - h*_new   (in place on eOut)
-@compute @workgroup_size(8,8) fn retarget(@builtin(global_invocation_id) g:vec3u) { let i=g.y*N+g.x; eOut[i]=eOut[i]+hp[i]-hs[i]; }
+// new target: keep the surface, e += h*_old - h*_new (in place on eOut); the new equilibrium offset starts at the equilibrium in force just before
+// (old h* + w dq, so a retarget during a transition continues from where the equilibrium was): dq = h*_old - h*_new + w dq   (p.trw = w before the switch)
+@compute @workgroup_size(8,8) fn retarget(@builtin(global_invocation_id) g:vec3u) { let i=g.y*N+g.x; let d=hp[i]-hs[i]; eOut[i]=eOut[i]+d; hp[N*N+i]=d+p.trw*hp[N*N+i]; }
 @compute @workgroup_size(8,8) fn addKick(@builtin(global_invocation_id) g:vec3u) { let i=g.y*N+g.x; vOut[i]=vOut[i]+hp[i]; }
 var<workgroup> r0:array<f32,256>; var<workgroup> r1:array<f32,256>; var<workgroup> r2:array<f32,256>; var<workgroup> r3:array<f32,256>;
 // stats = [mean e^2, mean h*^2, max|e|, non-finite count]

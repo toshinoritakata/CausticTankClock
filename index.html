@@ -27,10 +27,10 @@ details.sub>summary{color:#9ab;font-weight:500;cursor:pointer}
 <summary>CausticTankClock</summary>
 <div class="sec">Clock (c)</div>
 <div class="row"><label>clock mode</label><input id="clockOn" type="checkbox" checked><span></span></div>
-<div class="row"><label>clock layout</label><select id="clockLayout"><option value="stacked" selected>stacked</option><option value="single">single line</option><option value="seconds">seconds</option></select><span></span></div>
+<div class="row"><label>clock layout</label><select id="clockLayout"><option value="stacked" selected>stacked</option><option value="single">single line</option></select><span></span></div>
 <div class="row"><label>24h / 12h</label><select id="clock12"><option value="24" selected>24h</option><option value="12">12h</option></select><span></span></div>
-<div class="row"><label>show seconds</label><input id="clockSec" type="checkbox"><span></span></div>
-<div class="row"><label>tick kick</label><input id="kick" type="range" min="0" max="3" step="0.05" value="0.5"><span id="kickv"></span></div>
+<div class="row"><label>transition s</label><input id="trans" type="range" min="0" max="6" step="0.1" value="1.5"><span id="transv"></span></div>
+<div class="row"><label>tick kick (changed digits)</label><input id="kick" type="range" min="0" max="8" step="0.1" value="3"><span id="kickv"></span></div>
 <div class="row"><label>ambient waves</label><input id="ambOn" type="checkbox" checked><span></span></div>
 <div class="row"><label>ambient rms/h*</label><input id="ambient" type="range" min="0" max="0.15" step="0.005" value="0.02"><span id="ambientv"></span></div>
 <div class="row"><label>ambient scale</label><input id="ascale" type="range" min="2" max="8" step="0.25" value="4"><span id="ascalev"></span></div>

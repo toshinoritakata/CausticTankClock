@@ -159,13 +159,13 @@ export function createContexts({ device, shaders, renderer }) {
 
     // ----- relax (damped wave) -----
     const rmod = await compileWGSL(device, shaders.RELAX_WGSL(N), 'relax' + N);
-    const rEntries = [[0, 'uniform'], [1, 'read-only-storage'], [2, 'read-only-storage'], [3, 'storage'], [4, 'storage'], [5, 'read-only-storage'], [6, 'read-only-storage'], [7, 'storage'], [8, 'storage'], [9, 'uniform']]
+    const rEntries = [[0, 'uniform'], [1, 'read-only-storage'], [2, 'read-only-storage'], [3, 'storage'], [4, 'storage'], [5, 'read-only-storage'], [6, 'storage'], [7, 'storage'], [8, 'storage'], [9, 'uniform']]
       .map(([binding, type]) => ({ binding, visibility: WGSL_COMPUTE, buffer: { type } }));
     const rbgl = device.createBindGroupLayout({ entries: rEntries });
     const rlay = device.createPipelineLayout({ bindGroupLayouts: [rbgl] });
     const rp = {}; for (const e of ['step', 'compose', 'retarget', 'addKick', 'reduce']) rp[e] = device.createComputePipeline({ layout: rlay, compute: { module: rmod, entryPoint: e } });
     const E = [mk(nn * 4, ST | CS | CD), mk(nn * 4, ST | CS | CD)], Vb = [mk(nn * 4, ST | CS | CD), mk(nn * 4, ST | CS | CD)];
-    const ambU = mk(512, UN | CD), hp = mk(nn * 4, ST | CS | CD), rstats = mk(16, ST | CS), rU = mk(32, UN | CD);
+    const ambU = mk(512, UN | CD), hp = mk(nn * 8, ST | CS | CD), rstats = mk(16, ST | CS), rU = mk(48, UN | CD);   // hp: 2 planes (see relax.js)
     const statStage = mk(16, GPUBufferUsage.MAP_READ | CD), stageB = mk(nn * 4, GPUBufferUsage.MAP_READ | CD), stageE = mk(nn * 4, GPUBufferUsage.MAP_READ | CD);
     const bgP = [0, 1].map(k => device.createBindGroup({ layout: rbgl, entries: [
       { binding: 0, resource: { buffer: rU } }, { binding: 1, resource: { buffer: E[k] } }, { binding: 2, resource: { buffer: Vb[k] } },
