@@ -32,8 +32,31 @@ export function planSteps(dt, P, N) {
 // slow amplitude modulation (10-30 s) with random phases; phases advance with simulation time. The gain is normalised analytically with the steady-state transfer
 // |H| = 1/sqrt((w0^2-W^2)^2 + (G W)^2), G = gamma + nu k^2, so that rms(e) = ambient * rms(h*) whatever N / kappa / gamma / nu / c / s are.
 const AMB_MODES = 12, AMB_SEED = 4242, AMB_MOD_DEPTH = 0.6;
+// Fine ripples (the 'swimming-pool web'): RIP_MODES broadband travelling capillary-gravity waves on top of the swell, slots 12..31 of the same table.
+// They are real surface waves of the simulated field: the same refraction / splat turns them into the caustic web (no overlay).
+// |k| spread log-uniformly over [RIP_KLO, RIP_KHI] x 'ripple scale' cycles per tank width, random directions (no lattice look), amplitude ~ 1/|k|^1.5.
+// Physical speed: the forcing frequency is water's own dispersion relation for an assumed TANK_M-wide tank,
+//   omega^2 = (g k + (sigma/rho) k^3) tanh(k depth),  k = 2 pi |m| / TANK_M  (g 9.81, sigma 0.0728 N/m, rho 998 kg/m^3, depth = D x TANK_M),
+// so a forced mode travels at the real phase speed (the wave model's own c / kappa / s are tuned for the digit dynamics, not for water; driven
+// steady state e = A cos(k.x - W t) moves at W/|k| whatever the model's free dispersion). Default scale 14 -> wavelengths ~1.3-3.6 cm, 0.23-0.3 m/s.
+// Slow amplitude modulation (RIP_T s, wind-gust-like wave groups). Same steady-state normalisation as the swell: rms(e_ripple) = 'fine ripples' x rms(h*).
+const RIP_MODES = 20, RIP_SEED = 777, RIP_KLO = 0.6, RIP_KHI = 1.7, RIP_T = [3, 9], RIP_MOD_DEPTH = 0.7, AMB_SLOTS = 32;
+export const TANK_M = 0.30;   // assumed physical tank width (m): a 30 cm cube tank (water depth D x 0.30 m)
+const G_ACC = 9.81, SIGMA_RHO = 0.0728 / 998;
+export function omegaWater(cycles, depthFrac) { const k = TWO_PI * cycles / TANK_M; return Math.sqrt((G_ACC * k + SIGMA_RHO * k ** 3) * Math.tanh(k * depthFrac * TANK_M)); }
 export function createAmbient({ device, $, rd, mulberry32 }) {
-  const AMB = { modes: [], scaleKey: null, w: new Float32Array(AMB_MODES * 4), simT: 0 };
+  const AMB = { modes: [], scaleKey: null, rip: [], ripKey: null, w: new Float32Array(AMB_SLOTS * 4), simT: 0 };
+  function ripModes(scale) {
+    const rnd = mulberry32(RIP_SEED), out = []; let guard = 0;
+    while (out.length < RIP_MODES && guard++ < 20000) {
+      const kk0 = scale * RIP_KLO * Math.pow(RIP_KHI / RIP_KLO, rnd()), th = rnd() * TWO_PI;
+      const kx = Math.round(kk0 * Math.cos(th)), ky = Math.round(kk0 * Math.sin(th)), kk = Math.hypot(kx, ky);   // integer wave vectors: periodic domain
+      if (kk < 2) continue;
+      if (out.some(o => (o.kx === kx && o.ky === ky) || (o.kx === -kx && o.ky === -ky))) continue;
+      out.push({ kx, ky, kk, ph: rnd() * TWO_PI, T: RIP_T[0] + rnd() * (RIP_T[1] - RIP_T[0]), psi: rnd() * TWO_PI, dir: rnd() < 0.5 ? 1 : -1, w: Math.pow(kk / scale, -1.5), phi: rnd() * TWO_PI });
+    }
+    return out;
+  }
   function ambModes(scale) {
     const rnd = mulberry32(AMB_SEED), out = []; let guard = 0;
     while (out.length < AMB_MODES && guard++ < 5000) {
@@ -48,20 +71,29 @@ export function createAmbient({ device, $, rd, mulberry32 }) {
   // write this frame's forcing table to c.ambU; dt = simulated seconds, rmsStar = rms(h*)
   function update(c, dt, P, rmsStar) {
     const on = $('ambOn').checked, r = rd('ambient'), sc = Math.round(rd('ascale') * 4) / 4, w = AMB.w; w.fill(0);
+    const rr = rd('ripple'), rs = Math.round(rd('rscale'));
     if (AMB.scaleKey !== sc) { AMB.modes = ambModes(sc); AMB.scaleKey = sc; }
-    if (!on || r <= 0 || !(rmsStar > 0)) { device.queue.writeBuffer(c.ambU, 0, w); return; }
-    const M = AMB.modes, sp = rd('aspeed'); AMB.simT += dt;
-    let sw2 = 0; for (const m of M) sw2 += m.w * m.w;   // E_m = g w_m; sum E_m^2 <mod^2>/2 = target^2
-    const g = r * rmsStar / Math.sqrt(sw2 * (1 + AMB_MOD_DEPTH * AMB_MOD_DEPTH / 2) / 2);
-    M.forEach((m, i) => {
-      const k = TWO_PI * m.kk, w0sq = P.c2 * k * k + P.kappa + P.s * k ** 4, w0 = Math.sqrt(w0sq), W = sp * w0, G = P.gamma + P.nu * k * k;
-      const D = Math.sqrt((w0sq - W * W) ** 2 + (G * W) ** 2);   // forcing amplitude per unit e amplitude
-      m.phi += m.dir * W * dt;
-      const mod = 1 + AMB_MOD_DEPTH * Math.sin(TWO_PI * AMB.simT / m.T + m.psi);
-      w[4 * i] = TWO_PI * m.kx; w[4 * i + 1] = TWO_PI * m.ky; w[4 * i + 2] = m.phi + m.ph; w[4 * i + 3] = g * m.w * D * mod;
-    });
+    if (AMB.ripKey !== rs) { AMB.rip = ripModes(rs); AMB.ripKey = rs; }
+    if (!on || !(rmsStar > 0) || (r <= 0 && rr <= 0)) { device.queue.writeBuffer(c.ambU, 0, w); return; }
+    AMB.simT += dt;
+    // one mode set -> slots off.. : E_m = g w_m; sum E_m^2 <mod^2>/2 = target^2
+    const fill = (M, off, target, freq, depth) => {   // freq(mode, w0) -> forcing angular frequency
+      if (target <= 0) return;
+      let sw2 = 0; for (const m of M) sw2 += m.w * m.w;
+      const g = target * rmsStar / Math.sqrt(sw2 * (1 + depth * depth / 2) / 2);
+      M.forEach((m, j) => {
+        const i = off + j, k = TWO_PI * m.kk, w0sq = P.c2 * k * k + P.kappa + P.s * k ** 4, w0 = Math.sqrt(w0sq), G = P.gamma + P.nu * k * k;
+        const Wf = freq(m, w0), D = Math.sqrt((w0sq - Wf * Wf) ** 2 + (G * Wf) ** 2);   // forcing amplitude per unit e amplitude
+        m.phi += m.dir * Wf * dt;
+        const mod = 1 + depth * Math.sin(TWO_PI * AMB.simT / m.T + m.psi);
+        w[4 * i] = TWO_PI * m.kx; w[4 * i + 1] = TWO_PI * m.ky; w[4 * i + 2] = m.phi + m.ph; w[4 * i + 3] = g * m.w * D * mod;
+      });
+    };
+    const sp = rd('aspeed'), Dd = rd('D');
+    fill(AMB.modes, 0, r, (m, w0) => sp * w0, AMB_MOD_DEPTH);
+    fill(AMB.rip, AMB_MODES, rr, m => omegaWater(m.kk, Dd), RIP_MOD_DEPTH);
     device.queue.writeBuffer(c.ambU, 0, w);
   }
-  const state = () => ({ simT: AMB.simT, n: AMB.modes.length, modes: AMB.modes.map(m => [m.kx, m.ky, +m.T.toFixed(1)]) });
+  const state = () => ({ simT: AMB.simT, n: AMB.modes.length, modes: AMB.modes.map(m => [m.kx, m.ky, +m.T.toFixed(1)]), ripples: AMB.rip.map(m => [m.kx, m.ky, +m.T.toFixed(1)]) });
   return { update, state };
 }

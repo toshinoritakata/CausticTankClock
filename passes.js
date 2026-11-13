@@ -26,10 +26,10 @@ export function encodeSteps(pass, c, n) {
   for (let i = 0; i < n; i++) { pass.setPipeline(c.rp.step); pass.setBindGroup(0, c.bgP[c.cur]); pass.dispatchWorkgroups(c.N / 8, c.N / 8); c.cur ^= 1; }
 }
 
-// caustic of the surface currently in B.hT: grad, splat, blur -> B.C
+// caustic of the surface currently in B.hT: grad, splat (3 colour planes), blur each -> B.C (G, R, B)
 export function encodeCaustic(pass, c, P = c.P) {
   pass.setBindGroup(0, c.bg.R); d8(pass, c, P.grad); d8(pass, c, P.clearAcc); d8(pass, c, P.splat);
-  pass.setBindGroup(0, c.bg.c); d8(pass, c, P.accumToC); fft3(pass, c, P.colsC);
+  for (const bg of [c.bg.c, c.bg.cR, c.bg.cB]) { pass.setBindGroup(0, bg); d8(pass, c, P.accumToC); fft3(pass, c, P.colsC); }   // G, R, B planes
 }
 
 // god-ray light volume

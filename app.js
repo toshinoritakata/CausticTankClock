@@ -18,6 +18,15 @@ const qp = new URLSearchParams(location.search);
 
 const MAX_FRAME_DT = 0.05;        // s: longest frame step fed to the simulation
 const PRE_FINAL = 1.5;            // solver pre-blur at N = 512
+// Light source: the sun, a collimated beam with a 0.53 deg disc. Each floor point then sees the caustic convolved with the disc projected over the
+// refracted path L = D / cos(theta_t): a uniform disc of radius L tan(0.265 deg), sd = radius / 2 per axis (~0.0021 of the tank width at D 0.9, el 65).
+// The splat's minimum footprint (FOOT_MIN_TEX) already supplies part of it; the post-splat gaussian supplies the rest: total = the physical blur.
+// 'ray blur x' multiplies this physical blur (1 = sun disc; < 1 = sharper than a real sun).
+const SUN_DIAM_DEG = 0.53;
+function sunBlurTexels(D, el, N, nw) {
+  const ce = Math.cos(Math.min(90, Math.max(30, el)) * Math.PI / 180), st = ce / nw, ct = Math.sqrt(1 - st * st);
+  return (D / ct) * Math.tan(SUN_DIAM_DEG / 2 * Math.PI / 180) / 2 * N;
+}
 const SOLVER_BETA = 0.7;
 const STATS_EVERY_FRAMES = 6;     // GPU stats readback interval
 const BLOWUP_RESID = 50;          // residual |e|/|h*| above which the sim is re-initialised
@@ -60,11 +69,11 @@ async function main() {
 
   // ---------- solver (h*) ----------
   // sub: rays per texel of the pre-oblique solver_old splat (debug regression only); the live splat is one ray per texel with a Jacobian-sized footprint
-  const paramsFinal = () => ({ D: rd('D'), contrast: rd('contrast'), preblur: PRE_FINAL * S.N / 512, blur: 2 * rd('rblur') * S.N / 512, iters: rd('iters'), beta: SOLVER_BETA, sub: 1, morph: 0, el: rd('elev'), az: rd('az'), center: $('center').checked, wrap: $('wrap').checked, cast: rd('cast'), fit: $('fit').checked });
+  const paramsFinal = () => ({ D: rd('D'), contrast: rd('contrast'), preblur: PRE_FINAL * S.N / 512, blur: rd('rblur') * Math.sqrt(Math.max(sunBlurTexels(rd('D'), rd('elev'), S.N, NW) ** 2 - solverMod.FOOT_MIN_TEX ** 2, 0)), iters: rd('iters'), beta: SOLVER_BETA, sub: 1, morph: 0, el: rd('elev'), az: rd('az'), center: $('center').checked, wrap: $('wrap').checked, cast: rd('cast'), fit: $('fit').checked, disp: rd('disp') });
   function writeParams(c, p) {
     const k = p.D * (1 - 1 / NW), nn = c.N * c.N;
     const L = lightParams(p.el, p.az, p.D, p.center, p.wrap); S.L = L;
-    device.queue.writeBuffer(c.B.params, 0, new Float32Array([p.D, k, p.contrast, p.morph, p.preblur, p.blur, p.sub, NW, p.beta, 0, 0, 0,
+    device.queue.writeBuffer(c.B.params, 0, new Float32Array([p.D, k, p.contrast, p.morph, p.preblur, p.blur, p.sub, NW, p.beta, p.disp || 0, 0, 0,
       L.K[0], L.K[1], L.K[2], L.shDes[0], L.shDes[1], L.sOverD[0], L.sOverD[1], L.di[0], L.di[1], L.di[2], L.fadeW, 0]));
     device.queue.writeBuffer(c.B.mixIter, 0, new Float32Array([p.beta / nn, 1 - p.beta, 0, 0]));
   }

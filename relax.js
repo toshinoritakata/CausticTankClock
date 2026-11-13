@@ -13,8 +13,8 @@ struct P { dt:f32, c2:f32, kappa:f32, gamma:f32, nu:f32, s:f32, ih2:f32, p0:f32 
 @group(0) @binding(6) var<storage,read> hp:array<f32>;
 @group(0) @binding(7) var<storage,read_write> hT:array<f32>;
 @group(0) @binding(8) var<storage,read_write> stats:array<f32>;
-// continuous ambient forcing: 12 travelling waves, each vec4(2*pi*kx, 2*pi*ky, phase(t), amplitude); amplitude 0 = unused
-@group(0) @binding(9) var<uniform> amb:array<vec4f,12>;
+// continuous ambient forcing: 12 swell + 20 fine-ripple travelling waves, each vec4(2*pi*kx, 2*pi*ky, phase(t), amplitude); amplitude 0 = unused
+@group(0) @binding(9) var<uniform> amb:array<vec4f,32>;
 fn ix(x:i32,y:i32)->u32 { return u32(((y&(NI-1))*NI)+(x&(NI-1))); }
 @compute @workgroup_size(8,8) fn step(@builtin(global_invocation_id) g:vec3u) {
   let x=i32(g.x); let y=i32(g.y); let i=ix(x,y);
@@ -28,7 +28,7 @@ fn ix(x:i32,y:i32)->u32 { return u32(((y&(NI-1))*NI)+(x&(NI-1))); }
   let vn=vIn[ix(x+1,y)]+vIn[ix(x-1,y)]+vIn[ix(x,y+1)]+vIn[ix(x,y-1)];
   let lapV=(vn-4.0*v0)*p.ih2;
   var F=0.0; let px=f32(x)/f32(N); let py=f32(y)/f32(N);
-  for (var m=0; m<12; m++) { let q=amb[m]; if (q.w!=0.0) { F+=q.w*cos(q.x*px+q.y*py-q.z); } }
+  for (var m=0; m<32; m++) { let q=amb[m]; if (q.w!=0.0) { F+=q.w*cos(q.x*px+q.y*py-q.z); } }
   let a=p.c2*lapE-p.kappa*e0-p.s*bi-p.gamma*v0+p.nu*lapV+F;
   let v1=v0+p.dt*a;
   vOut[i]=v1; eOut[i]=e0+p.dt*v1;

@@ -1,5 +1,6 @@
 // Copied verbatim from ../caustics_gpu/app.js (compute solver WGSL: FFT Poisson / Monge-Ampere / forward splat); local change: the forward splat uses Jacobian-sized footprints (FOOT_*).
 export const SCALE = 65536;
+export const FOOT_MIN_TEX = 0.4;   // minimum footprint sd (texels); app.js subtracts it from the physical sun-disc blur
 export function computeWGSL(N) {
   const bilFn = (name, buf) => `fn ${name}(x:i32,y:i32,ax:f32,ay:f32)->f32{
   let x1=(x+1)&(NI-1); let y1=(y+1)&(NI-1);
@@ -11,7 +12,7 @@ const HALF: u32 = ${N / 2}u;
 const WGS: u32 = ${Math.min(256, N / 2)}u;
 const PI: f32 = 3.14159265358979;
 const SCALE: f32 = ${SCALE}.0;
-struct Params { D:f32, k:f32, contrast:f32, morph:f32, sigPre:f32, sigC:f32, sub:f32, nw:f32, beta:f32, p0:f32, p1:f32, p2:f32,
+struct Params { D:f32, k:f32, contrast:f32, morph:f32, sigPre:f32, sigC:f32, sub:f32, nw:f32, beta:f32, disp:f32, p1:f32, p2:f32,
   Kxx:f32, Kxy:f32, Kyy:f32, shx:f32, shy:f32, sdx:f32, sdy:f32, dix:f32, diy:f32, diz:f32, fadeW:f32, p3:f32 }
 struct Mix { a:f32, b:f32, p0:f32, p1:f32 }
 @group(0) @binding(0) var<uniform> prm: Params;
@@ -170,7 +171,7 @@ ${bilFn('bilT', 'Tb')}
   hxb[i] = (field[u32(y * NI + xp)] - field[u32(y * NI + xm)]) * s;
   hyb[i] = (field[u32(yp * NI + x)] - field[u32(ym * NI + x)]) * s;
 }
-@compute @workgroup_size(8,8) fn clearAcc(@builtin(global_invocation_id) g:vec3u) { atomicStore(&accum[g.y * N + g.x], 0u); }
+@compute @workgroup_size(8,8) fn clearAcc(@builtin(global_invocation_id) g:vec3u) { let i = g.y * N + g.x; atomicStore(&accum[i], 0u); atomicStore(&accum[N * N + i], 0u); atomicStore(&accum[2u * N * N + i], 0u); }
 @compute @workgroup_size(8,8) fn accumToC(@builtin(global_invocation_id) g:vec3u) {
   cbuf[g.y * N + g.x] = vec2f(f32(atomicLoad(&accum[g.y * N + g.x])) / SCALE, 0.0);
 }
@@ -187,12 +188,14 @@ fn fadeMask(fx:f32, fy:f32)->f32 {
 // Where light spreads, footprints overlap their neighbours -> a continuous field instead of a dot lattice; where it focuses (digits), the
 // footprint shrinks to FOOT_MIN ~ the old bilinear tent (sd 0.41), so edges keep their sharpness. Folds need no area division: no fireflies.
 const FOOT_SPREAD: f32 = 0.6;   // gaussian sd in units of the local ray spacing (0.6: ripple of a regular grid ~0.2%)
-const FOOT_MIN: f32 = 0.4;      // minimum sd (texels), used wherever light is focused: ~ the old bilinear tent (sd 0.41)
+const FOOT_MIN: f32 = ${FOOT_MIN_TEX};      // minimum sd (texels), used wherever light is focused: ~ the old bilinear tent (sd 0.41)
 const FOOT_RMAX: i32 = 8;       // footprint half-extent cap (texels): bounds the cost at strongly diverging rays (truncated, still normalised)
 // landing displacement (texels) of the ray leaving texel (x,y) (any integer, wrapped): exact vector Snell, oblique collimated light, floor at depth D
-fn landD(x:i32, y:i32)->vec2f {
+fn landD(x:i32, y:i32)->vec2f { return landDn(x, y, prm.nw); }
+// same with refractive index nw (dispersion planes)
+fn landDn(x:i32, y:i32, nw:f32)->vec2f {
   let i = u32((y & (NI - 1)) * NI + (x & (NI - 1)));
-  let gx = hxb[i]; let gy = hyb[i]; let hh = field[i]; let eta = 1.0 / prm.nw;
+  let gx = hxb[i]; let gy = hyb[i]; let hh = field[i]; let eta = 1.0 / nw;
   let inv = 1.0 / sqrt(1.0 + gx*gx + gy*gy);
   let n = vec3f(-gx * inv, -gy * inv, inv);
   let di = vec3f(prm.dix, prm.diy, prm.diz);
@@ -202,10 +205,32 @@ fn landD(x:i32, y:i32)->vec2f {
   let len = (prm.D + hh) / (-t.z);
   return vec2f(len * t.x, len * t.y) * f32(N);
 }
-// forward caustic: one ray per texel refracted to the floor, deposited with its Jacobian-sized gaussian footprint (periodic target, fadeMask at the landing point)
+// deposit one normalised gaussian footprint (inverse covariance ixx/ixy/iyy, half extents rx/ry) at p into channel plane ch
+fn deposit(p:vec2f, w:f32, ixx:f32, ixy:f32, iyy:f32, rx:i32, ry:i32, ch:u32) {
+  let X0 = i32(floor(p.x)); let Y0 = i32(floor(p.y));
+  var sum = 0.0;
+  for (var j = -ry; j <= ry + 1; j++) { for (var i = -rx; i <= rx + 1; i++) {
+    let d = vec2f(f32(X0 + i), f32(Y0 + j)) - p;
+    sum += exp(-0.5 * (ixx*d.x*d.x + 2.0*ixy*d.x*d.y + iyy*d.y*d.y));
+  } }
+  let s = w * SCALE / max(sum, 1e-20); let off = ch * N * N;
+  for (var j = -ry; j <= ry + 1; j++) { for (var i = -rx; i <= rx + 1; i++) {
+    let d = vec2f(f32(X0 + i), f32(Y0 + j)) - p;
+    let v = s * exp(-0.5 * (ixx*d.x*d.x + 2.0*ixy*d.x*d.y + iyy*d.y*d.y));
+    if (v >= 0.5) { atomicAdd(&accum[off + u32(((Y0 + j) & (NI - 1)) * NI + ((X0 + i) & (NI - 1)))], u32(v + 0.5)); }
+  } }
+}
+// forward caustic: one ray per texel refracted to the floor, deposited with its Jacobian-sized gaussian footprint (periodic target, fadeMask at the landing point).
+// Three planes: 0 = G at the design index prm.nw (what every debug check reads), 1 = R, 2 = B, each ray re-traced with that channel's own index of water
+// (exact vector Snell, no approximation): n = nw + prm.disp * DN_x, DN_x = n(line) - n(589.3 nm) for pure water at 20 C (Daimon & Masumura 2007):
+// n(656.3 nm, Fraunhofer C) = 1.33115, n(589.3 nm, D) = 1.33299, n(486.1 nm, F) = 1.33712. prm.disp = 1 is physical (panel: multiplier of it).
+// The same footprint (G's Jacobian) is used for R / B; per-plane energy is unchanged -> mean colour unchanged.
+const DN_R: f32 = 1.33115 - 1.33299;
+const DN_B: f32 = 1.33712 - 1.33299;
 @compute @workgroup_size(8,8) fn splat(@builtin(global_invocation_id) g:vec3u) {
   let x = i32(g.x); let y = i32(g.y);
-  let p = vec2f(f32(x), f32(y)) + landD(x, y);
+  let d = landD(x, y); let o = vec2f(f32(x), f32(y));
+  let p = o + d;
   let w = fadeMask(p.x, p.y);
   if (!(abs(p.x) < 1.0e6 && abs(p.y) < 1.0e6) || w <= 0.0) { return; }
   let a = vec2f(1.0, 0.0) + (landD(x + 1, y) - landD(x - 1, y)) * 0.5;   // d(landing)/dx
@@ -221,18 +246,10 @@ fn landD(x:i32, y:i32)->vec2f {
   let det = cxx * cyy - cxy * cxy;
   let ixx = cyy / det; let iyy = cxx / det; let ixy = -cxy / det;
   let rx = min(i32(ceil(2.5 * sqrt(cxx))), FOOT_RMAX); let ry = min(i32(ceil(2.5 * sqrt(cyy))), FOOT_RMAX);
-  let X0 = i32(floor(p.x)); let Y0 = i32(floor(p.y));
-  var sum = 0.0;
-  for (var j = -ry; j <= ry + 1; j++) { for (var i = -rx; i <= rx + 1; i++) {
-    let d = vec2f(f32(X0 + i), f32(Y0 + j)) - p;
-    sum += exp(-0.5 * (ixx*d.x*d.x + 2.0*ixy*d.x*d.y + iyy*d.y*d.y));
-  } }
-  let s = w * SCALE / max(sum, 1e-20);
-  for (var j = -ry; j <= ry + 1; j++) { for (var i = -rx; i <= rx + 1; i++) {
-    let d = vec2f(f32(X0 + i), f32(Y0 + j)) - p;
-    let v = s * exp(-0.5 * (ixx*d.x*d.x + 2.0*ixy*d.x*d.y + iyy*d.y*d.y));
-    if (v >= 0.5) { atomicAdd(&accum[u32(((Y0 + j) & (NI - 1)) * NI + ((X0 + i) & (NI - 1)))], u32(v + 0.5)); }
-  } }
+  deposit(p, w, ixx, ixy, iyy, rx, ry, 0u);
+  let pR = o + landDn(x, y, prm.nw + prm.disp * DN_R); let pB = o + landDn(x, y, prm.nw + prm.disp * DN_B);
+  deposit(pR, fadeMask(pR.x, pR.y), ixx, ixy, iyy, rx, ry, 1u);
+  deposit(pB, fadeMask(pB.x, pB.y), ixx, ixy, iyy, rx, ry, 2u);
 }
 `;
 }

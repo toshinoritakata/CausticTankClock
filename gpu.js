@@ -136,23 +136,24 @@ export function createContexts({ device, shaders, renderer }) {
     const B = {
       params: mk(96, UN | CD), mixPre: mk(16, UN | CD), mixFirst: mk(16, UN | CD), mixIter: mk(16, UN | CD),
       cbuf: mk(nn * 8, ST | CS | CD), field: mk(nn * 4, ST | CS | CD), T: mk(nn * 4, ST | CS | CD),
-      hx: mk(nn * 4, ST | CS), hy: mk(nn * 4, ST | CS), accum: mk(nn * 4, ST | CS), stats: mk(16, ST | CS),
-      C: mk(nn * 4, ST | CS | CD), tw: mk((N / 2 + 1 + N) * 8, ST | CD), hT: mk(nn * 4, ST | CS | CD),
-    };   // B.field = h* (solver output); B.hT = h* + e (what is splatted and meshed)
+      hx: mk(nn * 4, ST | CS), hy: mk(nn * 4, ST | CS), accum: mk(nn * 12, ST | CS), stats: mk(16, ST | CS),
+      C: mk(nn * 12, ST | CS | CD), tw: mk((N / 2 + 1 + N) * 8, ST | CD), hT: mk(nn * 4, ST | CS | CD),
+    };   // B.field = h* (solver output); B.hT = h* + e (what is splatted and meshed); B.accum / B.C = 3 planes of N x N: G (design wavelength), R, B
     const twd = new Float32Array((N / 2 + 1 + N) * 2);
     for (let m = 0; m <= N / 2; m++) { twd[2 * m] = Math.cos(2 * Math.PI * m / N); twd[2 * m + 1] = -Math.sin(2 * Math.PI * m / N); }
     for (let x = 0; x < N; x++) twd[2 * (N / 2 + 1 + x)] = 4 * Math.sin(Math.PI * x / N) ** 2;
     device.queue.writeBuffer(B.tw, 0, twd);
     const texDesc = { size: [N, N], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT };
     const texA = device.createTexture(texDesc), texB = device.createTexture(texDesc);
-    const bgFor = (mixBuf, fieldBuf) => device.createBindGroup({ layout: bgl, entries: [
+    // plane: null = whole accum (splat); 0/1/2 = bind accum + field to that N x N plane (accumToC + blur of one colour plane into B.C)
+    const bgFor = (mixBuf, fieldBuf, plane = null) => device.createBindGroup({ layout: bgl, entries: [
       { binding: 0, resource: { buffer: B.params } }, { binding: 1, resource: { buffer: mixBuf } },
-      { binding: 2, resource: { buffer: B.cbuf } }, { binding: 3, resource: { buffer: fieldBuf } },
+      { binding: 2, resource: { buffer: B.cbuf } }, { binding: 3, resource: plane === null ? { buffer: fieldBuf } : { buffer: fieldBuf, offset: plane * nn * 4, size: nn * 4 } },
       { binding: 4, resource: { buffer: B.T } }, { binding: 5, resource: { buffer: B.hx } }, { binding: 6, resource: { buffer: B.hy } },
-      { binding: 7, resource: { buffer: B.accum } }, { binding: 8, resource: { buffer: B.stats } },
+      { binding: 7, resource: plane === null ? { buffer: B.accum } : { buffer: B.accum, offset: plane * nn * 4, size: nn * 4 } }, { binding: 8, resource: { buffer: B.stats } },
       { binding: 9, resource: texA.createView() }, { binding: 10, resource: texB.createView() },
       { binding: 11, resource: { buffer: B.tw } }] });
-    const bg = { pre: bgFor(B.mixPre, B.field), first: bgFor(B.mixFirst, B.field), iter: bgFor(B.mixIter, B.field), c: bgFor(B.mixPre, B.C), R: bgFor(B.mixIter, B.hT) };
+    const bg = { pre: bgFor(B.mixPre, B.field), first: bgFor(B.mixFirst, B.field), iter: bgFor(B.mixIter, B.field), c: bgFor(B.mixPre, B.C, 0), cR: bgFor(B.mixPre, B.C, 1), cB: bgFor(B.mixPre, B.C, 2), R: bgFor(B.mixIter, B.hT) };
     device.queue.writeBuffer(B.mixPre, 0, new Float32Array([1 / nn, 0, 0, 0]));
     device.queue.writeBuffer(B.mixFirst, 0, new Float32Array([1 / nn, 0, 0, 0]));
 
@@ -164,7 +165,7 @@ export function createContexts({ device, shaders, renderer }) {
     const rlay = device.createPipelineLayout({ bindGroupLayouts: [rbgl] });
     const rp = {}; for (const e of ['step', 'compose', 'retarget', 'addKick', 'reduce']) rp[e] = device.createComputePipeline({ layout: rlay, compute: { module: rmod, entryPoint: e } });
     const E = [mk(nn * 4, ST | CS | CD), mk(nn * 4, ST | CS | CD)], Vb = [mk(nn * 4, ST | CS | CD), mk(nn * 4, ST | CS | CD)];
-    const ambU = mk(192, UN | CD), hp = mk(nn * 4, ST | CS | CD), rstats = mk(16, ST | CS), rU = mk(32, UN | CD);
+    const ambU = mk(512, UN | CD), hp = mk(nn * 4, ST | CS | CD), rstats = mk(16, ST | CS), rU = mk(32, UN | CD);
     const statStage = mk(16, GPUBufferUsage.MAP_READ | CD), stageB = mk(nn * 4, GPUBufferUsage.MAP_READ | CD), stageE = mk(nn * 4, GPUBufferUsage.MAP_READ | CD);
     const bgP = [0, 1].map(k => device.createBindGroup({ layout: rbgl, entries: [
       { binding: 0, resource: { buffer: rU } }, { binding: 1, resource: { buffer: E[k] } }, { binding: 2, resource: { buffer: Vb[k] } },

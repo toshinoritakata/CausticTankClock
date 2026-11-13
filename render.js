@@ -9,11 +9,13 @@ const ABSORB         : vec3f = vec3f(0.55, 0.14, 0.07);  // per-channel water ab
 const SCATTER_COL    : vec3f = vec3f(0.0045, 0.019, 0.023);  // in-scattered water body colour (lit by floor glow)
 const FLOOR_ALBEDO   : vec3f = vec3f(0.88, 0.90, 0.92);
 const FLOOR_AMBIENT  : f32 = 0.004;
-const FLOOR_GAIN     : f32 = 0.3;                        // floor radiance l = FLOOR_GAIN * k^FLOOR_POW (k = caustic excess over 0.4 x exposure slider)
-const FLOOR_POW      : f32 = 1.45;                       // > 1: dark floor stays dark; no shoulder, so digit bodies sit on the tone curve's slope (gradation) and only the
-                                                         //   focused cores / filaments (C ~ 3-5) go past white into the bloom
+// Diffuse (Lambertian) floor: radiance = albedo x irradiance, and the irradiance is C (relative to the mean, = 1 for a flat surface) x the exposure slider.
+// FLOOR_C0 = 0 and FLOOR_POW = 1 make that exactly linear (physical); round 6/7 used C0 0.4 / POW 1.45 (a look curve that blacked out the dimmer floor).
+const FLOOR_GAIN     : f32 = 0.15;                       // irradiance -> scene radiance scale (an exposure constant, not a shape)
+const FLOOR_C0       : f32 = 0.0;                        // look-only offset subtracted from C (0 = physical)
+const FLOOR_POW      : f32 = 1.0;                        // look-only power on C (1 = physical)
 const FLOOR_LMAX     : f32 = 3.0;                        // soft cap: l -> FLOOR_LMAX*tanh(l/FLOOR_LMAX) (<2% change below l~0.9 = C~2.9): transition / disturb cusps (C 40-60) cannot flash the bloom
-const EDGE_LIT_REF   : f32 = 1.5;                        // glass edges sample floorShade x this before the l/(1+l) compression (lower = less saturated compression: dark floor -> dark edge, lit floor -> bright)
+const EDGE_LIT_REF   : f32 = 2.5;                        // glass edges sample floorShade x this before the l/(1+l) compression (lower = less saturated compression: dark floor -> dark edge, lit floor -> bright)
 const LIGHT_COL      : vec3f = vec3f(1.0, 0.95, 0.86);
 const TOP_GAIN       : f32 = 2.0;                        // overhead soft bars (reflected in water): peak radiance; x F0 0.02 -> they sit well under the caustic digits
 const TOP_W          : f32 = 0.07;                       // bar width: gaussian sigma*sqrt2 across the bar (tangent-plane units at the key direction, ~4 deg) -> smooth falloff, no hard edge
@@ -75,13 +77,13 @@ fn bilH(uv:vec2f)->f32 {
 }
 fn bil(which:i32, uv:vec2f)->f32 {
   let n=i32(u.a.w); var q=clamp(uv,vec2f(0.0),vec2f(1.0))*f32(n-1);
-  if (which==2 && u.m.z>0.5) { q=floor(q+vec2f(0.5)); }   // 'nearest' caustic sampling: chunky texels
+  if (which>=2 && u.m.z>0.5) { q=floor(q+vec2f(0.5)); }   // 'nearest' caustic sampling: chunky texels
   let f=floor(q); let a=q-f;
   let x0=min(i32(f.x),n-1); let y0=min(i32(f.y),n-1); let x1=min(x0+1,n-1); let y1=min(y0+1,n-1);
   var v00=0.0; var v10=0.0; var v01=0.0; var v11=0.0;
   if (which==0) { v00=hxb[y0*n+x0]; v10=hxb[y0*n+x1]; v01=hxb[y1*n+x0]; v11=hxb[y1*n+x1]; }
   else if (which==1) { v00=hyb[y0*n+x0]; v10=hyb[y0*n+x1]; v01=hyb[y1*n+x0]; v11=hyb[y1*n+x1]; }
-  else { v00=Cb[y0*n+x0]; v10=Cb[y0*n+x1]; v01=Cb[y1*n+x0]; v11=Cb[y1*n+x1]; }
+  else { let o=(which-2)*n*n; v00=Cb[o+y0*n+x0]; v10=Cb[o+y0*n+x1]; v01=Cb[o+y1*n+x0]; v11=Cb[o+y1*n+x1]; }   // which 2/3/4 = caustic plane G/R/B
   return mix(mix(v00,v10,a.x), mix(v01,v11,a.x), a.y);
 }
 
@@ -170,9 +172,9 @@ fn env(d:vec3f, top:f32)->vec3f {   // top: gain of the overhead lights (1 = wat
 }
 
 fn floorShade(p:vec2f)->vec3f {
-  let c = bil(2, p + 0.5);
-  let k = max(c-0.4,0.0) * u.a.z;
-  let l = FLOOR_LMAX * tanh(min(pow(k, FLOOR_POW) * FLOOR_GAIN / FLOOR_LMAX, 10.0)) / FLOOR_GAIN;   // (tanh arg clamped: no exp overflow)
+  let c = vec3f(bil(3, p + 0.5), bil(2, p + 0.5), bil(4, p + 0.5));   // caustic per colour plane (R, G, B: dispersion fringes on the filaments)
+  let k = max(c-vec3f(FLOOR_C0),vec3f(0.0)) * u.a.z;
+  let l = FLOOR_LMAX * tanh(min(pow(k, vec3f(FLOOR_POW)) * FLOOR_GAIN / FLOOR_LMAX, vec3f(10.0))) / FLOOR_GAIN;   // (tanh arg clamped: no exp overflow)
   let edge = smoothstep(0.0, 0.16, 0.5 - max(abs(p.x), abs(p.y)));
   let vig = mix(0.5, 1.0, edge);
   let glow = LIGHT_COL * u.c.x * 0.03 * exp(-dot(p,p)*5.0);
